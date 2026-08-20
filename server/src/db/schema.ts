@@ -1,6 +1,7 @@
 import {
   mysqlTable,
   int,
+  bigint,
   varchar,
   text,
   mediumtext,
@@ -216,4 +217,29 @@ export const contactMessages = mysqlTable(
     index('idx_contact_email').on(table.email),
   ]
 );
+
+// ==========================================
+// 9. PDF JOBS TABLE (Durable Queue)
+// ==========================================
+export const pdfJobs = mysqlTable(
+  'pdf_jobs',
+  {
+    id: bigint('id', { mode: 'number' }).autoincrement().primaryKey(),
+    contentId: int('content_id').notNull(),
+    langCode: varchar('lang_code', { length: 10 }).notNull(),
+    status: mysqlEnum('status', ['queued', 'processing', 'completed', 'failed']).notNull().default('queued'),
+    attempts: tinyint('attempts', { unsigned: true }).notNull().default(0),
+    version: bigint('version', { mode: 'number' }).notNull().default(0),
+    leaseExpiresAt: timestamp('lease_expires_at'),
+    lastError: text('last_error'),
+    pdfFilePath: varchar('pdf_file_path', { length: 255 }),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_pdf_jobs_target').on(table.contentId, table.langCode),
+    index('idx_pdf_jobs_status').on(table.status),
+  ]
+);
+
 

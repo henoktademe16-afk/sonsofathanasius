@@ -80,10 +80,13 @@ export const contactLimiter = rateLimit({
   },
 });
 
-// 8. PDF Generation Limiter (5 downloads / 5 mins)
+// 8. PDF Limiter (30 downloads / 5 mins)
+//    Raised from 5/5min: with the 202-async contract, a single generation cycle
+//    consumes multiple requests (202 + Retry-After polls), and cached downloads
+//    are now cheap file streams — rendering happens in the background worker.
 export const pdfLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: config.isTest ? 10000 : 5,
+  max: config.isTest ? 10000 : 30,
   standardHeaders: true,
   legacyHeaders: false,
   handler: (_req: Request, res: Response) => {

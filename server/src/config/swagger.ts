@@ -341,7 +341,7 @@ export const openApiSpec = {
       get: {
         tags: ['Articles', 'PDF'],
         summary: 'Download Article PDF',
-        description: 'Streams static pre-generated A4 PDF document with Unicode NFC normalization and localized typography. Generates on-the-fly if missing.',
+        description: 'Streams static pre-generated A4 PDF document with Unicode NFC normalization and localized typography. If the PDF is generating, responds with HTTP 202 Accepted and a Retry-After header.',
         parameters: [
           {
             name: 'slug',
@@ -364,6 +364,33 @@ export const openApiSpec = {
             content: {
               'application/pdf': {
                 schema: { type: 'string', format: 'binary' },
+              },
+            },
+          },
+          '202': {
+            description: 'PDF generation enqueued in background',
+            headers: {
+              'Retry-After': {
+                description: 'Estimated seconds before the PDF is ready',
+                schema: { type: 'integer', example: 5 },
+              },
+            },
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        status: { type: 'string', example: 'generating' },
+                        retryAfter: { type: 'integer', example: 5 },
+                        message: { type: 'string', example: 'PDF generation in progress. Please retry in 5 seconds.' },
+                      },
+                    },
+                  },
+                },
               },
             },
           },
@@ -962,6 +989,108 @@ export const openApiSpec = {
           '401': { description: 'Unauthorized' },
           '403': { description: 'Forbidden (Requires Superadmin or Editor role)' },
           '404': { description: 'Translation not found' },
+        },
+      },
+    },
+    '/admin/pdf-jobs': {
+      get: {
+        tags: ['Admin', 'PDF'],
+        summary: 'List PDF Generation Jobs',
+        description: 'Lists recent background PDF queue generation jobs with status, attempts, error trace, and file paths.',
+        security: [{ SessionAuth: [] }],
+        parameters: [
+          {
+            name: 'limit',
+            in: 'query',
+            required: false,
+            schema: { type: 'integer', default: 50 },
+            description: 'Maximum number of jobs to return (max 100)',
+          },
+          {
+            name: 'status',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', enum: ['queued', 'processing', 'completed', 'failed'] },
+            description: 'Filter jobs by status',
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'List of PDF jobs',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    data: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          id: { type: 'integer' },
+                          contentId: { type: 'integer' },
+                          langCode: { type: 'string', enum: ['am', 'en', 'om', 'ti'] },
+                          status: { type: 'string', enum: ['queued', 'processing', 'completed', 'failed'] },
+                          attempts: { type: 'integer' },
+                          version: { type: 'integer' },
+                          lastError: { type: 'string', nullable: true },
+                          pdfFilePath: { type: 'string', nullable: true },
+                          createdAt: { type: 'string', format: 'date-time' },
+                          updatedAt: { type: 'string', format: 'date-time' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '401': { description: 'Unauthorized' },
+          '403': { description: 'Forbidden (Requires Superadmin or Editor role)' },
+        },
+      },
+    },
+    '/admin/pdf-jobs/{id}/retry': {
+      post: {
+        tags: ['Admin', 'PDF'],
+        summary: 'Retry Failed PDF Job',
+        description: 'Manually resets attempts and requeues a failed PDF job for rendering.',
+        security: [{ SessionAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'integer' },
+            description: 'PDF Job ID',
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Job requeued successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        retried: { type: 'boolean', example: true },
+                        id: { type: 'integer', example: 1 },
+                      },
+                    },
+                    message: { type: 'string', example: 'Job requeued successfully for generation' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Job not found or not in failed state' },
+          '401': { description: 'Unauthorized' },
+          '403': { description: 'Forbidden (Requires Superadmin or Editor role)' },
         },
       },
     },

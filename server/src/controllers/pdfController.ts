@@ -1,12 +1,15 @@
 import { Request, Response, NextFunction } from 'express';
 import fs from 'fs';
-import { getOrGenerateArticlePdf } from '../services/pdfService.js';
-import { BadRequestError } from '../middleware/errorHandler.js';
+import path from 'path';
+import { config } from '../config/index.js';
+import { selectArticlePdfDataBySlug } from '../pdf/pdfQueries.js';
+import { enqueuePdfJob } from '../pdf/pdfJobs.js';
+import { BadRequestError, NotFoundError } from '../middleware/errorHandler.js';
 import { ValidatedRequest } from '../validators/queryValidator.js';
 import { PdfQueryParams, ArticleSlugParams } from '../validators/publicQueryValidator.js';
 
 /**
- * Stream or generate static article PDF
+ * Stream static article PDF if cached, or enqueue generation and respond 202 Accepted
  * GET /api/v1/articles/:slug/pdf?lang={am|en|om|ti}
  */
 export async function downloadArticlePdfController(req: Request, res: Response, next: NextFunction) {
@@ -21,21 +24,51 @@ export async function downloadArticlePdfController(req: Request, res: Response, 
   }
 
   try {
-    const { filePath, fileName } = await getOrGenerateArticlePdf(slug, lang);
+    // 1. Resolve translation via slug and langCode (published-only with am-fallback)
+    const article = await selectArticlePdfDataBySlug(slug, lang);
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
-    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800'); // 1-day fresh, 7-day stale revalidate
+    if (!article) {
+      throw new NotFoundError('Article not found or not published');
+    }
 
-    const stream = fs.createReadStream(filePath);
-    stream.on('error', (err) => {
-      console.error('PDF stream error:', err);
-      if (!res.headersSent) {
-        next(err);
+    if (!article.pdfEnabled) {
+      throw new NotFoundError('PDF export is disabled for this article');
+    }
+
+    // 2. Check if static PDF exists on disk
+    if (article.pdfFilePath) {
+      const savedFileName = path.basename(article.pdfFilePath);
+      const savedAbsolutePath = path.join(config.storage.pdfDir, savedFileName);
+
+      if (fs.existsSync(savedAbsolutePath)) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(`SOA_${article.slug}.pdf`)}"`);
+        res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+
+        const stream = fs.createReadStream(savedAbsolutePath);
+        stream.on('error', (err) => {
+          console.error('PDF stream error:', err);
+          if (!res.headersSent) {
+            next(err);
+          }
+        });
+
+        return stream.pipe(res);
       }
-    });
+    }
 
-    return stream.pipe(res);
+    // 3. File not ready: enqueue background job and return HTTP 202 Accepted
+    void enqueuePdfJob(article.contentId, article.langCode);
+
+    res.set('Retry-After', '5');
+    return res.status(202).json({
+      success: true,
+      data: {
+        status: 'generating',
+        retryAfter: 5,
+        message: 'PDF generation in progress. Please retry in 5 seconds.',
+      },
+    });
   } catch (err) {
     next(err);
   }

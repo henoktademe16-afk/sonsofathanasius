@@ -7,6 +7,8 @@ import {
   deleteArticleController,
   upsertTranslationController,
   deleteTranslationController,
+  listPdfJobsController,
+  retryPdfJobController,
 } from '../controllers/adminController.js';
 import { uploadCoverController } from '../controllers/uploadController.js';
 
@@ -90,6 +92,34 @@ router.post(
   verifyAdminSession,
   requireRole('superadmin', 'editor'),
   uploadCoverController
+);
+
+// ==========================================
+// 3. ADMIN PDF QUEUE OBSERVABILITY
+// ==========================================
+
+/**
+ * List recent PDF generation jobs
+ * GET /api/v1/admin/pdf-jobs
+ */
+router.get(
+  '/pdf-jobs',
+  adminLimiter,
+  verifyAdminSession,
+  requireRole('superadmin', 'editor'),
+  listPdfJobsController
+);
+
+/**
+ * Requeue a failed PDF job
+ * POST /api/v1/admin/pdf-jobs/:id/retry
+ */
+router.post(
+  '/pdf-jobs/:id/retry',
+  adminLimiter,
+  verifyAdminSession,
+  requireRole('superadmin', 'editor'),
+  retryPdfJobController
 );
 
 export default router;
