@@ -81,13 +81,23 @@ export function layoutArticlePdf(doc: typeof PDFDocument.prototype, data: Articl
     .font('AppBold')
     .fontSize(8.5)
     .fillColor(crimson)
-    .text('ደቂቀ አትናቴዎስ', leftMargin, headerTopY, { continued: true })
+    .text(labels.headerBrandLeft, leftMargin, headerTopY, {
+      continued: labels.headerBrandRight.length > 0,
+    });
+
+  if (labels.headerBrandRight.length > 0) {
+    doc
+      .font('AppRegular')
+      .fontSize(8)
+      .fillColor(textMuted)
+      .text(labels.headerBrandRight, { continued: true });
+  }
+
+  doc
     .font('AppRegular')
     .fontSize(8)
-    .fillColor(textMuted)
-    .text('  |  SONS OF ATHANASIUS', { continued: true })
     .fillColor(gold)
-    .text(`  •  ${labels.headerSubtitle.replace(/^www\.sonsofathanasius\.com\s*•\s*/, '')}`, { align: 'left' });
+    .text(`  •  ${labels.headerSubtitle}`, { align: 'left' });
 
   doc
     .font('AppRegular')
@@ -117,6 +127,7 @@ export function layoutArticlePdf(doc: typeof PDFDocument.prototype, data: Articl
 
   // ── 3. Classical Metadata Row ────────────────────────
   const metaY = doc.y;
+  const colon = isEthiopic ? '፡ ' : ': ';
 
   const rawDate = data.publishedAt ? new Date(data.publishedAt) : new Date();
   const day = String(rawDate.getDate()).padStart(2, '0');
@@ -128,7 +139,7 @@ export function layoutArticlePdf(doc: typeof PDFDocument.prototype, data: Articl
     .font('AppBold')
     .fontSize(9)
     .fillColor(crimson)
-    .text(`${labels.authorLabel}፡ `, leftMargin, metaY, { continued: true })
+    .text(`${labels.authorLabel}${colon}`, leftMargin, metaY, { continued: true })
     .font('AppBold')
     .fontSize(9)
     .fillColor(textDark)
@@ -138,7 +149,7 @@ export function layoutArticlePdf(doc: typeof PDFDocument.prototype, data: Articl
     .font('AppRegular')
     .fontSize(8.5)
     .fillColor(textMuted)
-    .text(`${labels.dateLabel}፡ ${pubDate}`, leftMargin, metaY, {
+    .text(`${labels.dateLabel}${colon}${pubDate}`, leftMargin, metaY, {
       align: 'right',
       width: contentWidth,
     });
@@ -304,32 +315,34 @@ export function layoutArticlePdf(doc: typeof PDFDocument.prototype, data: Articl
       const paragraphText = sanitizeForFont(normalizeNfc(block.text), isEthiopic);
       if (paragraphText) {
         const paragraphChunks = chunkText(paragraphText);
-      for (let ci = 0; ci < paragraphChunks.length; ci++) {
-        doc
-          .font('AppRegular')
-          .fontSize(10)
-          .fillColor(textDark)
-          .text(paragraphChunks[ci], leftMargin, doc.y, {
-            width: contentWidth,
-            align: 'justify',
-            lineGap: 3.5,
-            paragraphGap: ci === paragraphChunks.length - 1 ? 6 : 0,
-          });
-      }
+        for (let ci = 0; ci < paragraphChunks.length; ci++) {
+          doc
+            .font('AppRegular')
+            .fontSize(10)
+            .fillColor(textDark)
+            .text(paragraphChunks[ci], leftMargin, doc.y, {
+              width: contentWidth,
+              align: 'justify',
+              lineGap: 3.5,
+              paragraphGap: ci === paragraphChunks.length - 1 ? 6 : 0,
+            });
+        }
       }
     }
   }
 
-  // ── 6. Classical Ornamental Seal on Last Page ─────────
+  // ── 6. Classical Ornamental Divider on Last Page ──────
   doc.moveDown(1.2);
   const sealY = doc.y;
   if (sealY < 720) {
-    doc.rect(leftMargin + contentWidth / 2 - 40, sealY, 80, 0.5).fill(gold);
+    const dividerWidth = 80;
+    const dividerX = leftMargin + (contentWidth - dividerWidth) / 2;
+    doc.rect(dividerX, sealY, dividerWidth, 0.5).fill(gold);
     doc
       .font('AppRegular')
       .fontSize(8)
       .fillColor(crimson)
-      .text('❖  ❖  ❖', leftMargin, sealY + 4, {
+      .text('•   •   •', leftMargin, sealY + 4, {
         width: contentWidth,
         align: 'center',
       });
@@ -339,53 +352,69 @@ export function layoutArticlePdf(doc: typeof PDFDocument.prototype, data: Articl
   const range = doc.bufferedPageRange();
   const totalPages = range.count;
 
-  for (let i = 0; i < totalPages; i++) {
-    doc.switchToPage(i);
-    const pageNum = i + 1;
+  // CRITICAL: Disable bottom margin during header/footer drawing
+  // so PDFKit never triggers an automatic page-break when drawing footer text
+  const savedBottomMargin = doc.page.margins.bottom;
+  doc.page.margins.bottom = 0;
 
-    // Running Header on subsequent pages
-    if (pageNum > 1) {
+  try {
+    for (let i = 0; i < totalPages; i++) {
+      doc.switchToPage(i);
+      const pageNum = i + 1;
+
+      // Running Header on subsequent pages
+      if (pageNum > 1) {
+        doc
+          .font('AppRegular')
+          .fontSize(7.5)
+          .fillColor(textMuted)
+          .text(safeTitle, leftMargin, 24, {
+            width: contentWidth - 120,
+            ellipsis: true,
+            lineBreak: false,
+          });
+
+        doc
+          .font('AppBold')
+          .fontSize(7.5)
+          .fillColor(crimson)
+          .text(labels.runningHeaderBrand, rightMargin - 110, 24, {
+            width: 110,
+            align: 'right',
+            lineBreak: false,
+          });
+
+        doc.rect(leftMargin, 34, contentWidth, 0.5).fill(borderLight);
+      }
+
+      // Running Footer on every page
+      const footerY = 800;
+      doc.rect(leftMargin, footerY - 10, contentWidth, 0.5).fill(borderLight);
+      doc.rect(leftMargin, footerY - 10, 30, 1).fill(gold);
+
       doc
         .font('AppRegular')
         .fontSize(7.5)
         .fillColor(textMuted)
-        .text(safeTitle, leftMargin, 24, {
-          width: contentWidth - 100,
+        .text(labels.footerQuote, leftMargin, footerY, {
+          width: contentWidth - 75,
+          lineGap: 1.5,
+          lineBreak: false,
           ellipsis: true,
         });
 
       doc
-        .font('AppBold')
+        .font('AppRegular')
         .fontSize(7.5)
         .fillColor(crimson)
-        .text('ደቂቀ አትናቴዎስ', rightMargin - 90, 24, {
+        .text(labels.pageLabel(pageNum, totalPages), rightMargin - 70, footerY, {
+          width: 70,
           align: 'right',
+          lineBreak: false,
         });
-
-      doc.rect(leftMargin, 34, contentWidth, 0.5).fill(borderLight);
     }
-
-    // Running Footer on every page
-    const footerY = 800;
-    doc.rect(leftMargin, footerY - 10, contentWidth, 0.5).fill(borderLight);
-    doc.rect(leftMargin, footerY - 10, 30, 1).fill(gold);
-
-    doc
-      .font('AppRegular')
-      .fontSize(7.5)
-      .fillColor(textMuted)
-      .text(labels.footerQuote, leftMargin, footerY, {
-        width: contentWidth - 70,
-        lineGap: 1.5,
-      });
-
-    doc
-      .font('AppRegular')
-      .fontSize(7.5)
-      .fillColor(crimson)
-      .text(labels.pageLabel(pageNum, totalPages), rightMargin - 65, footerY, {
-        align: 'right',
-      });
+  } finally {
+    doc.page.margins.bottom = savedBottomMargin;
   }
 }
 
@@ -407,14 +436,14 @@ export function renderArticlePdfToFile(data: ArticlePdfData, targetFilePath: str
 
       const doc = new PDFDocument({
         size: 'A4',
-        margins: { top: 44, bottom: 44, left: 48, right: 48 },
+        margins: { top: 44, bottom: 58, left: 48, right: 48 },
         bufferPages: true,
         info: {
           Title: safeTitle,
           Author: safeAuthor,
           Subject: 'Orthodox Christian Apologetics',
           Keywords: 'Orthodox, Apologetics, EOTC, Theology, Patristics',
-          Creator: 'ደቂቀ አትናቴዎስ (Sons of Athanasius)',
+          Creator: isEthiopic ? 'ደቂቀ አትናቴዎስ (Sons of Athanasius)' : 'Sons of Athanasius',
         },
       });
 
@@ -454,14 +483,14 @@ export function generateArticlePdf(data: ArticlePdfData): Promise<Buffer> {
 
       const doc = new PDFDocument({
         size: 'A4',
-        margins: { top: 44, bottom: 44, left: 48, right: 48 },
+        margins: { top: 44, bottom: 58, left: 48, right: 48 },
         bufferPages: true,
         info: {
           Title: safeTitle,
           Author: safeAuthor,
           Subject: 'Orthodox Christian Apologetics',
           Keywords: 'Orthodox, Apologetics, EOTC, Theology, Patristics',
-          Creator: 'ደቂቀ አትናቴዎስ (Sons of Athanasius)',
+          Creator: isEthiopic ? 'ደቂቀ አትናቴዎስ (Sons of Athanasius)' : 'Sons of Athanasius',
         },
       });
 

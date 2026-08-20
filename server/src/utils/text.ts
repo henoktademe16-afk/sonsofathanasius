@@ -12,10 +12,9 @@ export function normalizeNfc(text: string): string {
 export function sanitizeForFont(text: string, isEthiopic: boolean, fallback: string = ''): string {
   if (!text) return fallback;
   if (!isEthiopic) {
-    // Remove Ethiopic Unicode block (U+1200 - U+139F, U+2D80 - U+2DDF, U+AB00 - U+AB2F)
+    // Remove Ethiopic Unicode block (U+1200 - U+139F, U+2D80 - U+2DDF, U+AB00 - U+AB2F) when rendering with Latin-only font
     const cleaned = text
       .replace(/[\u1200-\u139F\u2D80-\u2DDF\uAB00-\uAB2F]+/g, '')
-      .replace(/[()]/g, '')
       .trim();
     return cleaned || fallback;
   }
