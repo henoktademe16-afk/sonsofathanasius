@@ -33,6 +33,22 @@ export function registerFontsForDoc(doc: typeof PDFDocument.prototype, isEthiopi
 /**
  * Populate standard layout into an active PDFDocument instance
  */
+const MAX_RENDER_CHUNK_LEN = 10_000;
+
+function chunkText(text: string, maxLen: number = MAX_RENDER_CHUNK_LEN): string[] {
+  if (text.length <= maxLen) return [text];
+  const chunks: string[] = [];
+  let rest = text;
+  while (rest.length > maxLen) {
+    let cut = rest.lastIndexOf(' ', maxLen);
+    if (cut <= 0) cut = maxLen;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut).replace(/^\s+/, '');
+  }
+  if (rest.length > 0) chunks.push(rest);
+  return chunks;
+}
+
 export function layoutArticlePdf(doc: typeof PDFDocument.prototype, data: ArticlePdfData): void {
   const isEthiopic = data.langCode === 'am' || data.langCode === 'ti';
   const labels = LOCALIZED_LABELS[data.langCode] || LOCALIZED_LABELS.am;
@@ -199,10 +215,11 @@ export function layoutArticlePdf(doc: typeof PDFDocument.prototype, data: Articl
         .fontSize(9.5)
         .fillColor('#292524');
 
-      const quoteHeight = doc.heightOfString(quoteText, {
-        width: contentWidth - 28,
-        lineGap: 3.5,
-      }) + 12;
+      const quoteChunks = chunkText(quoteText);
+      const quoteHeight = quoteChunks.reduce(
+        (h, c) => h + doc.heightOfString(c, { width: contentWidth - 28, lineGap: 3.5 }),
+        0,
+      ) + 12;
 
       doc
         .rect(leftMargin, quoteStartY, contentWidth, quoteHeight)
@@ -212,33 +229,41 @@ export function layoutArticlePdf(doc: typeof PDFDocument.prototype, data: Articl
         .rect(leftMargin, quoteStartY, 3, quoteHeight)
         .fill(gold);
 
-      doc
-        .font('AppRegular')
-        .fontSize(9.5)
-        .fillColor('#292524')
-        .text(quoteText, leftMargin + 14, quoteStartY + 6, {
-          width: contentWidth - 28,
-          lineGap: 3.5,
-        });
+      let quoteY = quoteStartY + 6;
+      for (const chunk of quoteChunks) {
+        doc
+          .font('AppRegular')
+          .fontSize(9.5)
+          .fillColor('#292524')
+          .text(chunk, leftMargin + 14, quoteY, {
+            width: contentWidth - 28,
+            lineGap: 3.5,
+          });
+        quoteY += doc.heightOfString(chunk, { width: contentWidth - 28, lineGap: 3.5 });
+      }
 
       doc.y = quoteStartY + quoteHeight + 10;
     } else if (block.type === 'list-item') {
       const bullet = block.ordered ? `${block.index}. ` : '• ';
       const itemText = sanitizeForFont(normalizeNfc(block.text), isEthiopic);
 
+      const itemChunks = chunkText(itemText);
       doc
         .font('AppBold')
         .fontSize(10)
         .fillColor(crimson)
-        .text(bullet, leftMargin + 8, doc.y, { continued: true })
-        .font('AppRegular')
-        .fontSize(10)
-        .fillColor(textDark)
-        .text(itemText, {
-          width: contentWidth - 20,
-          lineGap: 3,
-        });
-
+        .text(bullet, leftMargin + 8, doc.y, { continued: true });
+      for (let ci = 0; ci < itemChunks.length; ci++) {
+        doc
+          .font('AppRegular')
+          .fontSize(10)
+          .fillColor(textDark)
+          .text(itemChunks[ci], leftMargin + 18, ci === 0 ? doc.y : undefined, {
+            width: contentWidth - 20,
+            align: 'justify',
+            lineGap: 3,
+          });
+      }
       doc.moveDown(0.2);
     } else if (block.type === 'pre') {
       doc.moveDown(0.4);
@@ -250,39 +275,47 @@ export function layoutArticlePdf(doc: typeof PDFDocument.prototype, data: Articl
         .fontSize(8.5)
         .fillColor('#334155');
 
-      const preHeight = doc.heightOfString(preText, {
-        width: contentWidth - 20,
-        lineGap: 2,
-      }) + 10;
+      const preChunks = chunkText(preText);
+      const preHeight = preChunks.reduce(
+        (h, c) => h + doc.heightOfString(c, { width: contentWidth - 20, lineGap: 2 }),
+        0,
+      ) + 10;
 
       doc
         .rect(leftMargin, preStartY, contentWidth, preHeight)
         .fill('#F8FAFC');
 
-      doc
-        .font('AppRegular')
-        .fontSize(8.5)
-        .fillColor('#334155')
-        .text(preText, leftMargin + 10, preStartY + 5, {
-          width: contentWidth - 20,
-          lineGap: 2,
-        });
+      let preY = preStartY + 5;
+      for (const chunk of preChunks) {
+        doc
+          .font('AppRegular')
+          .fontSize(8.5)
+          .fillColor('#334155')
+          .text(chunk, leftMargin + 10, preY, {
+            width: contentWidth - 20,
+            lineGap: 2,
+          });
+        preY += doc.heightOfString(chunk, { width: contentWidth - 20, lineGap: 2 });
+      }
 
       doc.y = preStartY + preHeight + 8;
     } else {
       // Standard Paragraph
       const paragraphText = sanitizeForFont(normalizeNfc(block.text), isEthiopic);
       if (paragraphText) {
+        const paragraphChunks = chunkText(paragraphText);
+      for (let ci = 0; ci < paragraphChunks.length; ci++) {
         doc
           .font('AppRegular')
           .fontSize(10)
           .fillColor(textDark)
-          .text(paragraphText, leftMargin, doc.y, {
+          .text(paragraphChunks[ci], leftMargin, doc.y, {
             width: contentWidth,
             align: 'justify',
             lineGap: 3.5,
-            paragraphGap: 6,
+            paragraphGap: ci === paragraphChunks.length - 1 ? 6 : 0,
           });
+      }
       }
     }
   }
@@ -395,6 +428,9 @@ export function renderArticlePdfToFile(data: ArticlePdfData, targetFilePath: str
       layoutArticlePdf(doc, data);
       doc.end();
     } catch (err) {
+      // The write stream opens asynchronously (lazy fs open) and can still
+      // create the tmp file after this rejection — remove it late.
+      setTimeout(() => fs.promises.unlink(targetFilePath).catch(() => {}), 250);
       reject(err);
     }
   });

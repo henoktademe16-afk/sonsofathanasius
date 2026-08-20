@@ -115,7 +115,9 @@ function executeJobInWorker(job: {
       if (timer) clearTimeout(timer);
       worker.off('message', messageHandler);
       worker.off('error', errorHandler);
-      reject(err);
+      console.error(`💥 [PDFScheduler] Worker crashed for job #${job.id}: ${err?.message || err}`);
+      respawnWorker();
+      resolve({ ok: false, error: `Worker crashed: ${err?.message || 'unknown worker error'}` });
     };
 
     timer = setTimeout(() => {

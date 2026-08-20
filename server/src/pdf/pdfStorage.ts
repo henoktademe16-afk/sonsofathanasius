@@ -34,10 +34,11 @@ export async function writePdfAtomic(
     await renderFn(tmpPath);
     await fs.promises.rename(tmpPath, absolutePath);
   } finally {
-    // Unlink tmp file if it still exists on disk (due to error before rename)
-    if (fs.existsSync(tmpPath)) {
-      await fs.promises.unlink(tmpPath).catch(() => {});
-    }
+    // Unlink tmp unconditionally: the renderer's write stream opens
+    // asynchronously and may create the file after this finally runs,
+    // so a second delayed attempt catches the late async open.
+    await fs.promises.unlink(tmpPath).catch(() => {});
+    setTimeout(() => fs.promises.unlink(tmpPath).catch(() => {}), 250);
   }
 }
 
