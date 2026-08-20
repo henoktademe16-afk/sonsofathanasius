@@ -1,6 +1,10 @@
 import { db } from '../db/index.js';
 import { pdfJobs } from '../db/schema.js';
 import { sql, eq, and, desc } from 'drizzle-orm';
+import { selectArticlePdfData, computePdfContentHash } from './pdfQueries.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { config } from '../config/index.js';
 
 export const PDF_JOB_MAX_ATTEMPTS = 3;
 export const PDF_JOB_LEASE_SECONDS = 120;
@@ -17,6 +21,27 @@ export interface PdfJob {
   pdfFilePath: string | null;
   createdAt: Date | string;
   updatedAt: Date | string;
+}
+
+/**
+ * Decide whether a PDF regeneration is needed after an admin write.
+ * Returns false (skip) only when a PDF already exists on disk AND the stored
+ * content hash matches the current rendered fields — i.e. the write did not
+ * change anything visible in the PDF (e.g. tags, cover image, slug, views).
+ */
+export async function shouldRegeneratePdf(contentId: number, langCode: string): Promise<boolean> {
+  const rows = await selectArticlePdfData(contentId, langCode);
+  if (rows.length === 0) return false;
+  const row = rows[0];
+
+  // No PDF on record (or it was intentionally invalidated) -> must generate
+  if (!row.pdfFilePath) return true;
+
+  // PDF record exists but file is missing on disk (swept/archived) -> regenerate
+  if (!fs.existsSync(path.join(config.storage.pdfDir, path.basename(row.pdfFilePath)))) return true;
+
+  // Existing PDF is current iff the stored hash matches the current rendered fields
+  return row.pdfContentHash !== computePdfContentHash(row);
 }
 
 /**

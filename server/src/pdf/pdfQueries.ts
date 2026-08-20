@@ -1,6 +1,7 @@
 import { db } from '../db/index.js';
 import { content, contentTranslations, categories } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
 
 export interface ArticlePdfData {
   translationId?: number;
@@ -16,8 +17,31 @@ export interface ArticlePdfData {
   status?: string;
   pdfEnabled?: number;
   pdfFilePath?: string | null;
+  pdfContentHash?: string | null;
   publishedAt: Date | string | null;
   updatedAt?: Date | string | null;
+}
+
+/**
+ * sha256 fingerprint of exactly the fields rendered into the PDF.
+ * Any change to a rendered field (title, author, date, category, summary, body,
+ * language) changes the hash; any non-rendered change (tags, cover, views,
+ * slug) leaves it stable. Deterministic: computed from DB values post-commit,
+ * so controller and worker always agree.
+ */
+export function computePdfContentHash(
+  data: Pick<ArticlePdfData, 'langCode' | 'title' | 'authorName' | 'publishedAt' | 'categoryName' | 'summary' | 'body'>
+): string {
+  const parts = [
+    data.langCode,
+    data.title,
+    data.authorName ?? '',
+    data.publishedAt ? new Date(data.publishedAt).toISOString() : '',
+    data.categoryName,
+    data.summary ?? '',
+    data.body,
+  ];
+  return createHash('sha256').update(parts.join('|')).digest('hex');
 }
 
 /**
@@ -72,6 +96,7 @@ export async function selectArticlePdfData(
       body: contentTranslations.body,
       langCode: contentTranslations.langCode,
       pdfFilePath: contentTranslations.pdfFilePath,
+      pdfContentHash: contentTranslations.pdfContentHash,
     })
     .from(content)
     .innerJoin(categories, eq(content.categoryId, categories.id))
@@ -91,6 +116,7 @@ export async function selectArticlePdfData(
     status: r.status,
     pdfEnabled: r.pdfEnabled,
     pdfFilePath: r.pdfFilePath,
+    pdfContentHash: r.pdfContentHash,
     publishedAt: r.publishedAt,
     updatedAt: r.updatedAt,
   }));
@@ -123,6 +149,7 @@ export async function selectArticlePdfDataBySlug(
       body: contentTranslations.body,
       langCode: contentTranslations.langCode,
       pdfFilePath: contentTranslations.pdfFilePath,
+      pdfContentHash: contentTranslations.pdfContentHash,
     })
     .from(contentTranslations)
     .innerJoin(content, eq(contentTranslations.contentId, content.id))
@@ -156,6 +183,7 @@ export async function selectArticlePdfDataBySlug(
         body: contentTranslations.body,
         langCode: contentTranslations.langCode,
         pdfFilePath: contentTranslations.pdfFilePath,
+        pdfContentHash: contentTranslations.pdfContentHash,
       })
       .from(contentTranslations)
       .innerJoin(content, eq(contentTranslations.contentId, content.id))
@@ -185,6 +213,7 @@ export async function selectArticlePdfDataBySlug(
     status: r.status,
     pdfEnabled: r.pdfEnabled,
     pdfFilePath: r.pdfFilePath,
+    pdfContentHash: r.pdfContentHash,
     publishedAt: r.publishedAt,
     updatedAt: r.updatedAt,
   };

@@ -5,7 +5,7 @@ import { config } from '../config/index.js';
 import { db } from '../db/index.js';
 import { contentTranslations } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
-import { selectArticlePdfData } from './pdfQueries.js';
+import { selectArticlePdfData, computePdfContentHash } from './pdfQueries.js';
 import { renderArticlePdfToFile } from './pdfRenderer.js';
 import { buildPdfFileName, writePdfAtomic, sweepOldPdfs } from './pdfStorage.js';
 
@@ -57,12 +57,14 @@ if (parentPort) {
         return;
       }
 
-      // 4. Update translation record with newly generated PDF path
+      // 4. Update translation record with newly generated PDF path + content hash
+      //    (hash from the claim-time row = the exact content that was rendered)
       const [updateResult] = await db
         .update(contentTranslations)
         .set({
           pdfFilePath: relativePath,
           pdfGeneratedAt: new Date(),
+          pdfContentHash: computePdfContentHash(row),
         })
         .where(
           and(

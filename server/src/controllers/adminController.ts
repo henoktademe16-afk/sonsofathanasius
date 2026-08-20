@@ -18,7 +18,7 @@ import {
   invalidateAllCaches,
 } from '../cache/invalidation.js';
 import { refreshSearchIndex } from '../services/searchService.js';
-import { enqueuePdfJob, cancelJob, cancelJobsForArticle, listJobs, retryJob } from '../pdf/pdfJobs.js';
+import { enqueuePdfJob, cancelJob, cancelJobsForArticle, listJobs, retryJob, shouldRegeneratePdf } from '../pdf/pdfJobs.js';
 import { sweepOldPdfs } from '../pdf/pdfStorage.js';
 
 // ==========================================
@@ -186,6 +186,16 @@ export async function upsertTranslationTx(
       targetPublishedAt = existing.publishedAt;
     }
 
+    // Only invalidate the PDF when a rendered field actually changed.
+    // If the write touched nothing the PDF shows (tags, cover, slug, views),
+    // keep the existing PDF + content hash so regeneration is skipped entirely.
+    const pdfRelevantFieldsChanged =
+      existing.title !== input.title ||
+      (existing.summary ?? null) !== (input.summary || null) ||
+      existing.body !== processed.sanitizedHtml ||
+      (existing.publishedAt ? existing.publishedAt.getTime() : null) !==
+        (targetPublishedAt ? targetPublishedAt.getTime() : null);
+
     await tx
       .update(contentTranslations)
       .set({
@@ -197,8 +207,8 @@ export async function upsertTranslationTx(
         status: targetStatus,
         pdfEnabled: targetPdfEnabled,
         publishedAt: targetPublishedAt,
-        pdfFilePath: null,
-        pdfGeneratedAt: null,
+        pdfFilePath: pdfRelevantFieldsChanged ? null : existing.pdfFilePath,
+        pdfGeneratedAt: pdfRelevantFieldsChanged ? null : existing.pdfGeneratedAt,
         updatedAt: new Date(),
       })
       .where(eq(contentTranslations.id, translationId));
@@ -345,9 +355,10 @@ export async function createArticleController(req: Request, res: Response): Prom
   invalidateTagCaches();
   void refreshSearchIndex();
 
-  // Enqueue background PDF generation for each published & PDF-enabled translation
+  // Enqueue background PDF generation for each published & PDF-enabled translation.
+  // New translations always enqueue; updated ones only when rendered content changed.
   for (const t of transactionResult.translations) {
-    if (t.status === 'published' && t.pdfEnabled) {
+    if (t.status === 'published' && t.pdfEnabled && (!t.isUpdate || (await shouldRegeneratePdf(transactionResult.contentId, t.langCode)))) {
       await enqueuePdfJob(transactionResult.contentId, t.langCode);
     }
   }
@@ -549,7 +560,9 @@ export async function updateArticleController(req: Request, res: Response): Prom
   // 5d. Handle PDF status transitions and queue enqueues
   for (const t of transactionResult.translations) {
     if (t.status === 'published' && t.pdfEnabled) {
-      await enqueuePdfJob(articleId, t.langCode);
+      if (!t.isUpdate || (await shouldRegeneratePdf(articleId, t.langCode))) {
+        await enqueuePdfJob(articleId, t.langCode);
+      }
     } else {
       // Status left 'published' or pdfEnabled dropped to 0
       await cancelJob(articleId, t.langCode);
@@ -687,7 +700,9 @@ export async function upsertTranslationController(req: Request, res: Response): 
 
   // Handle PDF queue enqueue vs cancel/sweep
   if (result.translation.status === 'published' && result.translation.pdfEnabled) {
-    await enqueuePdfJob(articleId, result.translation.langCode);
+    if (!result.translation.isUpdate || (await shouldRegeneratePdf(articleId, result.translation.langCode))) {
+      await enqueuePdfJob(articleId, result.translation.langCode);
+    }
   } else {
     await cancelJob(articleId, result.translation.langCode);
     await sweepOldPdfs(articleId, result.translation.langCode);

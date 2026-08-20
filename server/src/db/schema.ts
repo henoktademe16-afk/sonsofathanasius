@@ -70,6 +70,9 @@ export const contentTranslations = mysqlTable('content_translations', {
   // Multilingual PDF Export Path & Timestamp
   pdfFilePath: varchar('pdf_file_path', { length: 255 }),
   pdfGeneratedAt: timestamp('pdf_generated_at'),
+  // sha256 over every field rendered into the PDF (langCode|title|authorName|publishedAt|categoryName|summary|body).
+  // Lets admin writes that do NOT change rendered content skip regeneration entirely.
+  pdfContentHash: varchar('pdf_content_hash', { length: 64 }),
 }, (table) => [
   uniqueIndex('uniq_content_lang').on(table.contentId, table.langCode),
   uniqueIndex('uniq_slug_lang').on(table.slug, table.langCode),
