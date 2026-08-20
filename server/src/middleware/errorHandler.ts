@@ -1,6 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
-import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { sendError } from '../utils/response.js';
 import { config } from '../config/index.js';
 
@@ -76,7 +75,7 @@ export function errorHandler(
     }
 
     // Database Duplicate Key Errors (MySQL code: ER_DUP_ENTRY / 1062)
-    const driverErr = err instanceof DrizzleQueryError ? err.cause : err;
+    const driverErr = (err as any).cause || err;
     if (driverErr && typeof driverErr === 'object' && 'errno' in driverErr && (driverErr as { errno: number }).errno === 1062) {
       return sendError(res, 'A record with this identifier or slug already exists.', 409);
     }

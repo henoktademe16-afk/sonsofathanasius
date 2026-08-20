@@ -2,13 +2,13 @@ import { z } from 'zod';
 
 export const ContactFormSchema = z.object({
   name: z
-    .string({ error: 'Name is required' })
+    .string({ required_error: 'Name is required', invalid_type_error: 'Name must be a string' })
     .trim()
     .min(1, 'Name must be at least 1 character')
     .max(100, 'Name must be at most 100 characters')
     .refine((val) => val.trim().length > 0, 'Name cannot be empty or whitespace only'),
   email: z
-    .string({ error: 'Email is required' })
+    .string({ required_error: 'Email is required', invalid_type_error: 'Email must be a string' })
     .trim()
     .toLowerCase()
     .email('Invalid email address')
@@ -22,7 +22,7 @@ export const ContactFormSchema = z.object({
     .or(z.literal(''))
     .transform((val) => (val && val.length > 0 ? val : undefined)),
   message: z
-    .string({ error: 'Message is required' })
+    .string({ required_error: 'Message is required', invalid_type_error: 'Message must be a string' })
     .trim()
     .min(10, 'Message must be at least 10 characters')
     .max(5000, 'Message must be at most 5000 characters')

@@ -5,7 +5,6 @@ import { z } from 'zod';
 import { db } from '../db/index.js';
 import { content, contentTranslations, contentMedia, contentTags, categories, tags } from '../db/schema.js';
 import { eq, and, inArray } from 'drizzle-orm';
-import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { sendSuccess } from '../utils/response.js';
 import { BadRequestError, NotFoundError } from '../middleware/errorHandler.js';
 import { processArticleContent } from '../services/sanitizerService.js';
@@ -29,7 +28,7 @@ import {
 
 export const CreateTranslationSchema = z.object({
   langCode: z.enum(['am', 'en', 'om', 'ti'], {
-    error: 'Language code must be one of: am, en, om, ti',
+    message: 'Language code must be one of: am, en, om, ti',
   }),
   title: z.string().trim().min(2, 'Title must be at least 2 characters').max(255),
   slug: z.string().trim().max(240).optional(),
@@ -58,7 +57,7 @@ export const CreateArticleSchema = z.object({
   publishedAt: z
     .union([
       z.string().refine((val) => !isNaN(Date.parse(val)), {
-        error: 'publishedAt must be a valid ISO date string',
+        message: 'publishedAt must be a valid ISO date string',
       }),
       z.date(),
     ])
@@ -81,7 +80,7 @@ export const UpdateArticleSchema = z.object({
   publishedAt: z
     .union([
       z.string().refine((val) => !isNaN(Date.parse(val)), {
-        error: 'publishedAt must be a valid ISO date string',
+        message: 'publishedAt must be a valid ISO date string',
       }),
       z.date(),
     ])
@@ -108,7 +107,7 @@ async function runWithTransactionRetry<T>(fn: () => Promise<T>, maxRetries = 3):
       return await fn();
     } catch (err: unknown) {
       attempt++;
-      const driverErr = err instanceof DrizzleQueryError ? err.cause : err;
+      const driverErr = (err as any).cause || err;
       const isTransient =
         driverErr &&
         typeof driverErr === 'object' &&
