@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { db } from '../../src/db/index.js';
 import { content, categories, pdfJobs } from '../../src/db/schema.js';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import {
   enqueuePdfJob,
   claimNextJob,
@@ -18,6 +18,13 @@ describe('PDF Database Queue Storage Client', () => {
   let testContentId: number;
 
   beforeEach(async () => {
+    // claimNextJob claims the earliest queued job globally (FIFO, production
+    // semantics). Purge any stale queued/processing rows left by crashed runs
+    // or earlier suites so the test's own job is the one claimed.
+    await db
+      .delete(pdfJobs)
+      .where(inArray(pdfJobs.status, ['queued', 'processing']));
+
     let catId: number;
     const existingCat = await db.select().from(categories).limit(1);
     if (existingCat.length > 0) {

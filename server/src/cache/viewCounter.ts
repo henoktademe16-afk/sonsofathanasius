@@ -95,8 +95,7 @@ export function trackViewMiddleware(req: Request, _res: Response, next: NextFunc
 export async function flushViewCounts(): Promise<void> {
   const snapshot: Array<{ translationId: number; count: number }> = [];
 
-  for (const translationId of viewCounters.keys()) {
-    const count = viewCounters.get(translationId);
+  for (const [translationId, count] of viewCounters.entries()) {
     if (count && count > 0) {
       snapshot.push({ translationId, count });
     }
