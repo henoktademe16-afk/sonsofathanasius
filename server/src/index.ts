@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { config } from './config/index.js';
 import { securityHeaders, corsMiddleware, methodAllowlist } from './middleware/security.js';
-import { generalLimiter } from './middleware/rateLimiter.js';
+import { generalLimiter, pdfLimiter } from './middleware/rateLimiter.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import apiRouter from './routes/index.js';
 import { initializeSearchIndex } from './services/searchService.js';
@@ -32,7 +32,10 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // 3. Static Uploads File Serving (Local dev parity with production Apache web root)
-app.use('/uploads', express.static(config.storage.uploadsDir));
+//    PDFs are rate-limited: direct versioned URLs (guessable from public data)
+//    otherwise bypass pdfLimiter and enable unlimited download scraping.
+app.use('/uploads/covers', express.static(config.storage.coversDir));
+app.use('/uploads/pdf', pdfLimiter, express.static(config.storage.pdfDir));
 
 // 4. Global Rate Limiter for API
 app.use('/api/', generalLimiter);
@@ -76,6 +79,13 @@ ensureStorageDirs();
 if (config.nodeEnv !== 'test') {
   const server = app.listen(config.port, async () => {
     console.log(`☦ [Sons of Athanasius API] Server running on http://localhost:${config.port} (${config.nodeEnv})`);
+
+    // Slowloris protection: abort connections that never finish sending their
+    // request (headers within 10s, full request within 30s). Response streaming
+    // (PDF downloads) is unaffected: `timeout = 0` disables the inactivity cap.
+    server.requestTimeout = 30_000;
+    server.headersTimeout = 10_000;
+    server.timeout = 0;
 
     // Warm up in-memory full-text search index
     await initializeSearchIndex();

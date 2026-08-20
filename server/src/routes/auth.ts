@@ -6,7 +6,7 @@ import {
   logoutAllController,
 } from '../controllers/authController.js';
 import { verifyAdminSession } from '../middleware/auth.js';
-import { authLimiter } from '../middleware/rateLimiter.js';
+import { authLimiter, authIpLimiter } from '../middleware/rateLimiter.js';
 
 const router = Router();
 
@@ -43,7 +43,7 @@ const router = Router();
  *       429:
  *         description: Too many login attempts
  */
-router.post('/login', authLimiter, loginController);
+router.post('/login', authLimiter, authIpLimiter, loginController);
 
 /**
  * @openapi
