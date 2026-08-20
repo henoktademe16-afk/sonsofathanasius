@@ -32,6 +32,7 @@ export const openApiSpec = {
     { name: 'Search', description: 'Amharic homophone normalized in-memory full-text search' },
     { name: 'PDF', description: 'Pure JavaScript dynamic PDF export with localized Ethiopic typography' },
     { name: 'Admin', description: 'Protected content management endpoints (Session cookie required)' },
+    { name: 'Contact', description: 'Public contact and inquiry form submission (highly rate-limited)' },
   ],
   paths: {
     '/health': {
