@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { db } from '../db/index.js';
-import { categories, content } from '../db/schema.js';
-import { eq, count, asc } from 'drizzle-orm';
+import { categories, content, contentTranslations } from '../db/schema.js';
+import { eq, asc, sql } from 'drizzle-orm';
 import { ValidatedRequest } from '../validators/queryValidator.js';
 import { CategoryQueryParams } from '../validators/publicQueryValidator.js';
 
@@ -15,33 +15,33 @@ export interface LocalizedCategory {
 }
 
 /**
- * Helper to pick localized name & description with fallback
+ * Helper to pick localized name and description for a category
  */
 function getLocalizedCategoryFields(
-  row: typeof categories.$inferSelect,
+  cat: typeof categories.$inferSelect,
   lang: string
 ): { name: string; description: string | null } {
   switch (lang.toLowerCase()) {
     case 'en':
       return {
-        name: row.nameEn || row.nameAm || row.slug,
-        description: row.descriptionEn ?? row.descriptionAm ?? null,
+        name: cat.nameEn || cat.nameAm || cat.slug,
+        description: cat.descriptionEn || cat.descriptionAm || null,
       };
     case 'om':
       return {
-        name: row.nameOm || row.nameEn || row.nameAm || row.slug,
-        description: row.descriptionOm ?? row.descriptionEn ?? row.descriptionAm ?? null,
+        name: cat.nameOm || cat.nameEn || cat.nameAm || cat.slug,
+        description: cat.descriptionOm || cat.descriptionEn || cat.descriptionAm || null,
       };
     case 'ti':
       return {
-        name: row.nameTi || row.nameAm || row.nameEn || row.slug,
-        description: row.descriptionTi ?? row.descriptionAm ?? row.descriptionEn ?? null,
+        name: cat.nameTi || cat.nameAm || cat.nameEn || cat.slug,
+        description: cat.descriptionTi || cat.descriptionAm || cat.descriptionEn || null,
       };
     case 'am':
     default:
       return {
-        name: row.nameAm || row.nameEn || row.slug,
-        description: row.descriptionAm ?? row.descriptionEn ?? null,
+        name: cat.nameAm || cat.nameEn || cat.slug,
+        description: cat.descriptionAm || cat.descriptionEn || null,
       };
   }
 }
@@ -54,7 +54,7 @@ export async function getCategories(req: Request, _res: Response) {
   const query = (req as ValidatedRequest<CategoryQueryParams>).validatedQuery || { lang: 'am' };
   const lang = query.lang || 'am';
 
-  // Fetch active categories and article counts in parallel
+  // Fetch active categories and published article counts in parallel
   const [activeCategories, articleCounts] = await Promise.all([
     db
       .select()
@@ -64,10 +64,11 @@ export async function getCategories(req: Request, _res: Response) {
     db
       .select({
         categoryId: content.categoryId,
-        count: count(content.id),
+        count: sql<number>`count(distinct ${content.id})`,
       })
       .from(content)
-      .where(eq(content.status, 'published'))
+      .innerJoin(contentTranslations, eq(contentTranslations.contentId, content.id))
+      .where(eq(contentTranslations.status, 'published'))
       .groupBy(content.categoryId),
   ]);
 
@@ -93,9 +94,9 @@ export async function getCategories(req: Request, _res: Response) {
     success: true,
     data: result,
     meta: {
+      count: result.length,
       timestamp: new Date().toISOString(),
       lang,
-      total: result.length,
     },
   };
 }

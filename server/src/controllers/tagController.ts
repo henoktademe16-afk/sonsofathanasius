@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { db } from '../db/index.js';
-import { tags, contentTags, content } from '../db/schema.js';
-import { eq, count, asc } from 'drizzle-orm';
+import { tags, contentTags, contentTranslations } from '../db/schema.js';
+import { eq, asc, sql } from 'drizzle-orm';
 import { ValidatedRequest } from '../validators/queryValidator.js';
 import { TagQueryParams } from '../validators/publicQueryValidator.js';
 
@@ -26,11 +26,11 @@ export async function getTags(req: Request, _res: Response) {
     db
       .select({
         tagId: contentTags.tagId,
-        count: count(contentTags.contentId),
+        count: sql<number>`count(distinct ${contentTags.contentId})`,
       })
       .from(contentTags)
-      .innerJoin(content, eq(contentTags.contentId, content.id))
-      .where(eq(content.status, 'published'))
+      .innerJoin(contentTranslations, eq(contentTags.contentId, contentTranslations.contentId))
+      .where(eq(contentTranslations.status, 'published'))
       .groupBy(contentTags.tagId),
   ]);
 
@@ -58,9 +58,9 @@ export async function getTags(req: Request, _res: Response) {
     success: true,
     data: result,
     meta: {
+      count: result.length,
       timestamp: new Date().toISOString(),
       lang,
-      total: result.length,
     },
   };
 }

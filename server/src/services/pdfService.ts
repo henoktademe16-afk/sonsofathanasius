@@ -587,18 +587,19 @@ function resolveCategoryName(row: {
 }
 
 /**
- * Eagerly pre-generate static PDFs for all published translations of an article
+ * Eagerly pre-generate static PDFs for all published, PDF-enabled translations of an article container
  */
 export async function eagerGenerateArticlePdfs(contentId: number, force: boolean = false): Promise<void> {
   try {
     const rows = await db
       .select({
+        translationId: contentTranslations.id,
         contentId: content.id,
-        pdfEnabled: content.pdfEnabled,
-        status: content.status,
+        pdfEnabled: contentTranslations.pdfEnabled,
+        status: contentTranslations.status,
         authorName: content.authorName,
-        publishedAt: content.publishedAt,
-        updatedAt: content.updatedAt,
+        publishedAt: contentTranslations.publishedAt,
+        updatedAt: contentTranslations.updatedAt,
         categoryNameAm: categories.nameAm,
         categoryNameEn: categories.nameEn,
         categoryNameOm: categories.nameOm,
@@ -613,15 +614,15 @@ export async function eagerGenerateArticlePdfs(contentId: number, force: boolean
       .from(content)
       .innerJoin(categories, eq(content.categoryId, categories.id))
       .innerJoin(contentTranslations, eq(contentTranslations.contentId, content.id))
-      .where(eq(content.id, contentId));
+      .where(
+        and(
+          eq(content.id, contentId),
+          eq(contentTranslations.status, 'published'),
+          eq(contentTranslations.pdfEnabled, 1)
+        )
+      );
 
     if (rows.length === 0) return;
-    const master = rows[0];
-
-    // Only generate if article is published and pdfEnabled is active
-    if (master.status !== 'published' || !master.pdfEnabled) {
-      return;
-    }
 
     let generatedCount = 0;
 
@@ -661,7 +662,7 @@ export async function eagerGenerateArticlePdfs(contentId: number, force: boolean
 }
 
 /**
- * Eagerly pre-generate static PDF for a single translation of an article
+ * Eagerly pre-generate static PDF for a single translation of an article container
  */
 export async function eagerGenerateSingleTranslationPdf(
   contentId: number,
@@ -671,12 +672,13 @@ export async function eagerGenerateSingleTranslationPdf(
   try {
     const rows = await db
       .select({
+        translationId: contentTranslations.id,
         contentId: content.id,
-        pdfEnabled: content.pdfEnabled,
-        status: content.status,
+        pdfEnabled: contentTranslations.pdfEnabled,
+        status: contentTranslations.status,
         authorName: content.authorName,
-        publishedAt: content.publishedAt,
-        updatedAt: content.updatedAt,
+        publishedAt: contentTranslations.publishedAt,
+        updatedAt: contentTranslations.updatedAt,
         categoryNameAm: categories.nameAm,
         categoryNameEn: categories.nameEn,
         categoryNameOm: categories.nameOm,
@@ -691,14 +693,17 @@ export async function eagerGenerateSingleTranslationPdf(
       .from(content)
       .innerJoin(categories, eq(content.categoryId, categories.id))
       .innerJoin(contentTranslations, eq(contentTranslations.contentId, content.id))
-      .where(and(eq(content.id, contentId), eq(contentTranslations.langCode, langCode)));
+      .where(
+        and(
+          eq(content.id, contentId),
+          eq(contentTranslations.langCode, langCode),
+          eq(contentTranslations.status, 'published'),
+          eq(contentTranslations.pdfEnabled, 1)
+        )
+      );
 
     if (rows.length === 0) return;
     const row = rows[0];
-
-    if (row.status !== 'published' || !row.pdfEnabled) {
-      return;
-    }
 
     if (!force && row.pdfFilePath) {
       const existingDiskPath = path.join(config.storage.pdfDir, path.basename(row.pdfFilePath));
@@ -729,22 +734,27 @@ export async function eagerGenerateSingleTranslationPdf(
 }
 
 /**
- * Reconcile / Backfill Missing PDFs for all published articles on boot
+ * Reconcile / Backfill Missing PDFs for all published, PDF-enabled translations on boot
  */
 export async function reconcileMissingPdfs(): Promise<void> {
   try {
     const publishedRows = await db
       .select({
+        translationId: contentTranslations.id,
         contentId: content.id,
         langCode: contentTranslations.langCode,
         pdfFilePath: contentTranslations.pdfFilePath,
       })
-      .from(content)
-      .innerJoin(contentTranslations, eq(contentTranslations.contentId, content.id))
-      .where(and(eq(content.status, 'published'), eq(content.pdfEnabled, 1)));
+      .from(contentTranslations)
+      .innerJoin(content, eq(contentTranslations.contentId, content.id))
+      .where(
+        and(
+          eq(contentTranslations.status, 'published'),
+          eq(contentTranslations.pdfEnabled, 1)
+        )
+      );
 
     let backfilledCount = 0;
-    const missingArticleIds = new Set<number>();
 
     for (const row of publishedRows) {
       const isMissingOnDisk =
@@ -752,17 +762,13 @@ export async function reconcileMissingPdfs(): Promise<void> {
         !fs.existsSync(path.join(config.storage.pdfDir, path.basename(row.pdfFilePath)));
 
       if (isMissingOnDisk) {
-        missingArticleIds.add(row.contentId);
+        await eagerGenerateSingleTranslationPdf(row.contentId, row.langCode, false);
+        backfilledCount++;
       }
     }
 
-    for (const contentId of missingArticleIds) {
-      await eagerGenerateArticlePdfs(contentId, false);
-      backfilledCount++;
-    }
-
     if (backfilledCount > 0) {
-      console.log(`📄 [PDFService] Boot sweep reconciled and backfilled PDFs for ${backfilledCount} articles.`);
+      console.log(`📄 [PDFService] Boot sweep reconciled and backfilled PDFs for ${backfilledCount} translations.`);
     }
   } catch (err) {
     console.error('⚠️ [PDFService] Error in reconcileMissingPdfs sweep:', err);
@@ -785,15 +791,16 @@ export async function getOrGenerateArticlePdf(
   }
 
   const executionPromise = (async () => {
-    // 1. Query article translation by slug and langCode
+    // 1. Query article translation by slug and langCode (requires translation status = 'published')
     let rows = await db
       .select({
+        translationId: contentTranslations.id,
         contentId: content.id,
-        pdfEnabled: content.pdfEnabled,
-        status: content.status,
+        pdfEnabled: contentTranslations.pdfEnabled,
+        status: contentTranslations.status,
         authorName: content.authorName,
-        publishedAt: content.publishedAt,
-        updatedAt: content.updatedAt,
+        publishedAt: contentTranslations.publishedAt,
+        updatedAt: contentTranslations.updatedAt,
         categoryNameAm: categories.nameAm,
         categoryNameEn: categories.nameEn,
         categoryNameOm: categories.nameOm,
@@ -805,27 +812,28 @@ export async function getOrGenerateArticlePdf(
         langCode: contentTranslations.langCode,
         pdfFilePath: contentTranslations.pdfFilePath,
       })
-      .from(content)
+      .from(contentTranslations)
+      .innerJoin(content, eq(contentTranslations.contentId, content.id))
       .innerJoin(categories, eq(content.categoryId, categories.id))
-      .innerJoin(contentTranslations, eq(contentTranslations.contentId, content.id))
       .where(
         and(
           eq(contentTranslations.slug, slug),
           eq(contentTranslations.langCode, langCode),
-          eq(content.status, 'published')
+          eq(contentTranslations.status, 'published')
         )
       );
 
-    // Fallback to Amharic if specific translation slug not found
+    // Fallback to published Amharic translation if specific language translation slug not found
     if (rows.length === 0 && langCode !== 'am') {
       rows = await db
         .select({
+          translationId: contentTranslations.id,
           contentId: content.id,
-          pdfEnabled: content.pdfEnabled,
-          status: content.status,
+          pdfEnabled: contentTranslations.pdfEnabled,
+          status: contentTranslations.status,
           authorName: content.authorName,
-          publishedAt: content.publishedAt,
-          updatedAt: content.updatedAt,
+          publishedAt: contentTranslations.publishedAt,
+          updatedAt: contentTranslations.updatedAt,
           categoryNameAm: categories.nameAm,
           categoryNameEn: categories.nameEn,
           categoryNameOm: categories.nameOm,
@@ -837,14 +845,14 @@ export async function getOrGenerateArticlePdf(
           langCode: contentTranslations.langCode,
           pdfFilePath: contentTranslations.pdfFilePath,
         })
-        .from(content)
+        .from(contentTranslations)
+        .innerJoin(content, eq(contentTranslations.contentId, content.id))
         .innerJoin(categories, eq(content.categoryId, categories.id))
-        .innerJoin(contentTranslations, eq(contentTranslations.contentId, content.id))
         .where(
           and(
             eq(contentTranslations.slug, slug),
             eq(contentTranslations.langCode, 'am'),
-            eq(content.status, 'published')
+            eq(contentTranslations.status, 'published')
           )
         );
     }

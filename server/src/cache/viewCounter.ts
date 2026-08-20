@@ -1,37 +1,37 @@
 import { Request, Response, NextFunction } from 'express';
 import { LRUCache } from 'lru-cache';
 import { db } from '../db/index.js';
-import { content, contentTranslations } from '../db/schema.js';
+import { contentTranslations } from '../db/schema.js';
 import { sql, eq } from 'drizzle-orm';
 
-// 1. In-memory view count buffer (holds increments for up to 2000 articles)
+// 1. In-memory view count buffer (holds increments keyed by translation ID)
 const viewCounters = new LRUCache<number, number>({
-  max: 2000,
+  max: 5000,
   ttl: 120_000, // 2 minutes
 });
 
-// 2. In-memory Slug -> ContentId resolution cache (avoids DB queries on cache HITs)
-const slugToContentIdMap = new LRUCache<string, number>({
-  max: 3000,
+// 2. In-memory Slug -> TranslationId resolution cache (avoids DB queries on cache HITs)
+const slugToTranslationIdMap = new LRUCache<string, number>({
+  max: 5000,
   ttl: 86400_000, // 24 hours
 });
 
 /**
- * Prime or update the in-memory slug to article ID mapping
+ * Prime or update the in-memory slug to translation ID mapping
  */
-export function recordSlugIdMapping(slug: string, contentId: number): void {
-  if (slug && contentId) {
-    slugToContentIdMap.set(slug.trim(), contentId);
+export function recordSlugIdMapping(slug: string, translationId: number): void {
+  if (slug && translationId) {
+    slugToTranslationIdMap.set(slug.trim(), translationId);
   }
 }
 
 /**
- * Record an article read view in memory by numeric article ID
+ * Record an article read view in memory by numeric translation ID
  */
-export function trackArticleView(articleId: number): void {
-  if (!articleId || isNaN(articleId)) return;
-  const current = viewCounters.get(articleId) ?? 0;
-  viewCounters.set(articleId, current + 1);
+export function trackArticleView(translationId: number): void {
+  if (!translationId || isNaN(translationId)) return;
+  const current = viewCounters.get(translationId) ?? 0;
+  viewCounters.set(translationId, current + 1);
 }
 
 /**
@@ -42,31 +42,31 @@ export function trackArticleViewBySlug(slug: string): void {
   if (!slug) return;
   const cleanSlug = slug.trim();
 
-  // Check if slug is already a numeric content ID
+  // Check if slug is already a numeric translation ID
   if (/^\d+$/.test(cleanSlug)) {
     trackArticleView(parseInt(cleanSlug, 10));
     return;
   }
 
   // Fast path: In-memory cache hit
-  const cachedId = slugToContentIdMap.get(cleanSlug);
+  const cachedId = slugToTranslationIdMap.get(cleanSlug);
   if (cachedId) {
     trackArticleView(cachedId);
     return;
   }
 
-  // Cold path: Asynchronously resolve ID from DB and record
+  // Cold path: Asynchronously resolve translation ID from DB and record
   void (async () => {
     try {
       const rows = await db
-        .select({ contentId: contentTranslations.contentId })
+        .select({ id: contentTranslations.id })
         .from(contentTranslations)
         .where(eq(contentTranslations.slug, cleanSlug))
         .limit(1);
 
-      if (rows.length > 0 && rows[0].contentId) {
-        const id = rows[0].contentId;
-        slugToContentIdMap.set(cleanSlug, id);
+      if (rows.length > 0 && rows[0].id) {
+        const id = rows[0].id;
+        slugToTranslationIdMap.set(cleanSlug, id);
         trackArticleView(id);
       }
     } catch {
@@ -93,35 +93,35 @@ export function trackViewMiddleware(req: Request, _res: Response, next: NextFunc
  * Only deletes from memory on successful DB commit to prevent data loss.
  */
 export async function flushViewCounts(): Promise<void> {
-  const snapshot: Array<{ articleId: number; count: number }> = [];
+  const snapshot: Array<{ translationId: number; count: number }> = [];
 
-  for (const articleId of viewCounters.keys()) {
-    const count = viewCounters.get(articleId);
+  for (const translationId of viewCounters.keys()) {
+    const count = viewCounters.get(translationId);
     if (count && count > 0) {
-      snapshot.push({ articleId, count });
+      snapshot.push({ translationId, count });
     }
   }
 
   if (snapshot.length === 0) return;
 
   try {
-    // Atomic batch update within a transaction
+    // Atomic batch update within a transaction keyed by translation ID
     await db.transaction(async (tx) => {
-      for (const { articleId, count } of snapshot) {
+      for (const { translationId, count } of snapshot) {
         await tx
-          .update(content)
-          .set({ viewCount: sql`${content.viewCount} + ${count}` })
-          .where(sql`${content.id} = ${articleId}`);
+          .update(contentTranslations)
+          .set({ viewCount: sql`${contentTranslations.viewCount} + ${count}` })
+          .where(eq(contentTranslations.id, translationId));
       }
     });
 
     // Delete from in-memory map ONLY after the transaction commits successfully
-    for (const { articleId, count } of snapshot) {
-      const remaining = (viewCounters.get(articleId) ?? 0) - count;
+    for (const { translationId, count } of snapshot) {
+      const remaining = (viewCounters.get(translationId) ?? 0) - count;
       if (remaining <= 0) {
-        viewCounters.delete(articleId);
+        viewCounters.delete(translationId);
       } else {
-        viewCounters.set(articleId, remaining);
+        viewCounters.set(translationId, remaining);
       }
     }
   } catch (err) {

@@ -5,8 +5,8 @@ import { eq } from 'drizzle-orm';
 import { processSearchTerm, normalizeAmharic } from './amharicNormalizer.js';
 
 export interface SearchDocument {
-  id: string; // Composite unique key: `${contentId}_${langCode}`
-  contentId: number;
+  id: number; // Unique translation ID
+  contentId: number; // Container ID
   title: string;
   slug: string;
   summary: string | null;
@@ -20,8 +20,8 @@ export interface SearchDocument {
 }
 
 export interface EnrichedSearchResult {
-  id: number;
-  contentId: number;
+  id: number; // Translation ID
+  contentId: number; // Container ID
   title: string;
   slug: string;
   summary: string | null;
@@ -64,7 +64,7 @@ function createSearchEngine(): MiniSearch<SearchDocument> {
     searchOptions: {
       boost: { title: 4, summary: 2, bodySearchable: 1 },
       prefix: true, // "አትና" matches "አትናቴዎስ" (applied to trailing token)
-      fuzzy: 0.2,   // Typo tolerance (only triggers on >= 5 chars, protecting 1-3 char fidel words)
+      fuzzy: 0.2, // Typo tolerance (only triggers on >= 5 chars, protecting 1-3 char fidel words)
       combineWith: 'AND', // Precision-first: all terms must match
     },
   });
@@ -76,10 +76,11 @@ function createSearchEngine(): MiniSearch<SearchDocument> {
 async function fetchAllSearchDocuments(): Promise<SearchDocument[]> {
   const rows = await db
     .select({
+      id: contentTranslations.id,
       contentId: content.id,
       coverImage: content.coverImage,
       authorName: content.authorName,
-      publishedAt: content.publishedAt,
+      publishedAt: contentTranslations.publishedAt,
       categorySlug: categories.slug,
       categoryNameEn: categories.nameEn,
       categoryNameAm: categories.nameAm,
@@ -91,10 +92,10 @@ async function fetchAllSearchDocuments(): Promise<SearchDocument[]> {
       bodySearchable: contentTranslations.bodySearchable,
       langCode: contentTranslations.langCode,
     })
-    .from(content)
+    .from(contentTranslations)
+    .innerJoin(content, eq(contentTranslations.contentId, content.id))
     .innerJoin(categories, eq(content.categoryId, categories.id))
-    .innerJoin(contentTranslations, eq(contentTranslations.contentId, content.id))
-    .where(eq(content.status, 'published'));
+    .where(eq(contentTranslations.status, 'published'));
 
   return rows.map((row) => {
     // Pick localized category name based on translation langCode
@@ -104,7 +105,7 @@ async function fetchAllSearchDocuments(): Promise<SearchDocument[]> {
     if (row.langCode === 'ti' && row.categoryNameTi) categoryName = row.categoryNameTi;
 
     return {
-      id: `${row.contentId}_${row.langCode}`,
+      id: row.id,
       contentId: row.contentId,
       title: row.title,
       slug: row.slug,
@@ -141,7 +142,7 @@ export async function initializeSearchIndex(): Promise<void> {
     searchEngine = engine;
     console.log(`🔍 [SearchEngine] In-memory index initialized with ${documents.length} document translations.`);
   } catch (err) {
-    console.error('❌ [SearchEngine] Failed to initialize search index:', err);
+    console.error('❌ [SearchEngine] Failed to initialize in-memory search index:', err);
   } finally {
     isIndexing = false;
     if (pendingReindex) {
@@ -152,8 +153,7 @@ export async function initializeSearchIndex(): Promise<void> {
 }
 
 /**
- * Execute an in-memory search query
- * Precision-first with 'AND' combination, falling back to 'OR' for broad queries
+ * Search the in-memory MiniSearch index with Amharic normalization and fallback
  */
 export function searchArticles(
   query: string,
@@ -197,7 +197,7 @@ export function searchArticles(
   return cappedResults.map((result) => {
     const doc = result as unknown as SearchDocument & SearchResult;
     return {
-      id: doc.contentId,
+      id: doc.id,
       contentId: doc.contentId,
       title: doc.title,
       slug: doc.slug,

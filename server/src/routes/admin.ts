@@ -6,6 +6,7 @@ import {
   updateArticleController,
   deleteArticleController,
   upsertTranslationController,
+  deleteTranslationController,
 } from '../controllers/adminController.js';
 import { uploadCoverController } from '../controllers/uploadController.js';
 
@@ -61,6 +62,18 @@ router.post(
   verifyAdminSession,
   requireRole('superadmin', 'editor', 'translator'),
   upsertTranslationController
+);
+
+/**
+ * Delete a specific language translation for an existing article
+ * DELETE /api/v1/admin/articles/:id/translations/:langCode
+ */
+router.delete(
+  '/articles/:id/translations/:langCode',
+  adminLimiter,
+  verifyAdminSession,
+  requireRole('superadmin', 'editor'),
+  deleteTranslationController
 );
 
 // ==========================================

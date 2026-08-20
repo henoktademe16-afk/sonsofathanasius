@@ -19,7 +19,6 @@ import {
 } from '../cache/invalidation.js';
 import { refreshSearchIndex } from '../services/searchService.js';
 import {
-  eagerGenerateArticlePdfs,
   eagerGenerateSingleTranslationPdf,
 } from '../services/pdfService.js';
 
@@ -35,20 +34,6 @@ export const CreateTranslationSchema = z.object({
   slug: z.string().trim().max(240).optional(),
   summary: z.string().trim().max(1000).nullable().optional(),
   body: z.string().trim().min(10, 'Article body must be at least 10 characters'),
-});
-
-export const MediaItemSchema = z.object({
-  mediaKind: z.enum(['video', 'audio']),
-  platform: z.enum(['youtube', 'vimeo', 'soundcloud', 'self-hosted', 'custom']),
-  embedId: z.string().trim().min(1).max(255),
-  caption: z.string().trim().max(255).nullable().optional(),
-  sortOrder: z.number().int().optional(),
-});
-
-export const CreateArticleSchema = z.object({
-  categoryId: z.number().int().positive('Category ID must be a positive integer'),
-  authorName: z.string().trim().max(150).nullable().optional(),
-  coverImage: z.string().trim().max(255).nullable().optional(),
   status: z.enum(['draft', 'published', 'archived']).default('draft').optional(),
   pdfEnabled: z
     .union([z.boolean(), z.number()])
@@ -64,6 +49,20 @@ export const CreateArticleSchema = z.object({
     ])
     .nullable()
     .optional(),
+});
+
+export const MediaItemSchema = z.object({
+  mediaKind: z.enum(['video', 'audio']),
+  platform: z.enum(['youtube', 'vimeo', 'soundcloud', 'self-hosted', 'custom']),
+  embedId: z.string().trim().min(1).max(255),
+  caption: z.string().trim().max(255).nullable().optional(),
+  sortOrder: z.number().int().optional(),
+});
+
+export const CreateArticleSchema = z.object({
+  categoryId: z.number().int().positive('Category ID must be a positive integer'),
+  authorName: z.string().trim().max(150).nullable().optional(),
+  coverImage: z.string().trim().max(255).nullable().optional(),
   tagIds: z.array(z.number().int().positive()).optional().default([]),
   media: z.array(MediaItemSchema).optional().default([]),
   translations: z.array(CreateTranslationSchema).min(1, 'At least one translation is required'),
@@ -73,20 +72,6 @@ export const UpdateArticleSchema = z.object({
   categoryId: z.number().int().positive('Category ID must be a positive integer').optional(),
   authorName: z.string().trim().max(150).nullable().optional(),
   coverImage: z.string().trim().max(255).nullable().optional(),
-  status: z.enum(['draft', 'published', 'archived']).optional(),
-  pdfEnabled: z
-    .union([z.boolean(), z.number()])
-    .transform((val) => (val ? 1 : 0))
-    .optional(),
-  publishedAt: z
-    .union([
-      z.string().refine((val) => !isNaN(Date.parse(val)), {
-        error: 'publishedAt must be a valid ISO date string',
-      }),
-      z.date(),
-    ])
-    .nullable()
-    .optional(),
   tagIds: z.array(z.number().int().positive()).optional(),
   media: z.array(MediaItemSchema).optional(),
   translations: z.array(CreateTranslationSchema).min(1, 'At least one translation is required').optional(),
@@ -139,6 +124,9 @@ export async function upsertTranslationTx(
   title: string;
   slug: string;
   summary: string | null;
+  status: 'draft' | 'published' | 'archived';
+  pdfEnabled: number;
+  publishedAt: Date | null;
   isUpdate: boolean;
 }> {
   const processed = processArticleContent(input.body);
@@ -152,12 +140,16 @@ export async function upsertTranslationTx(
   let isUpdate = false;
   let translationId: number;
   let slug: string;
+  let targetStatus: 'draft' | 'published' | 'archived';
+  let targetPdfEnabled: number;
+  let targetPublishedAt: Date | null;
 
   if (existingTranslation.length > 0) {
     isUpdate = true;
-    translationId = existingTranslation[0].id;
+    const existing = existingTranslation[0];
+    translationId = existing.id;
 
-    // Preserve existing slug unless a new explicit slug is provided in the request payload
+    // Resolve slug: preserve existing slug unless a new explicit slug is provided in the request payload
     if (input.slug && input.slug.trim()) {
       slug = generateSlug(input.slug).slice(0, 240);
       const existingOtherSlug = await tx
@@ -170,7 +162,25 @@ export async function upsertTranslationTx(
         slug = `${slug.slice(0, 230)}-${contentId}`;
       }
     } else {
-      slug = existingTranslation[0].slug;
+      slug = existing.slug;
+    }
+
+    targetStatus = input.status ?? existing.status;
+    targetPdfEnabled = input.pdfEnabled !== undefined ? input.pdfEnabled : existing.pdfEnabled;
+
+    // Resolve publishedAt
+    if (targetStatus === 'published') {
+      if (input.publishedAt) {
+        targetPublishedAt = new Date(input.publishedAt);
+      } else if (existing.publishedAt) {
+        targetPublishedAt = existing.publishedAt;
+      } else {
+        targetPublishedAt = new Date();
+      }
+    } else if (input.publishedAt !== undefined) {
+      targetPublishedAt = input.publishedAt ? new Date(input.publishedAt) : null;
+    } else {
+      targetPublishedAt = existing.publishedAt;
     }
 
     await tx
@@ -181,8 +191,12 @@ export async function upsertTranslationTx(
         summary: input.summary || null,
         body: processed.sanitizedHtml,
         bodySearchable: processed.bodySearchable,
+        status: targetStatus,
+        pdfEnabled: targetPdfEnabled,
+        publishedAt: targetPublishedAt,
         pdfFilePath: null,
         pdfGeneratedAt: null,
+        updatedAt: new Date(),
       })
       .where(eq(contentTranslations.id, translationId));
   } else {
@@ -197,6 +211,17 @@ export async function upsertTranslationTx(
       slug = `${slug.slice(0, 230)}-${contentId}`;
     }
 
+    targetStatus = input.status || 'draft';
+    targetPdfEnabled = input.pdfEnabled ?? 0;
+
+    if (targetStatus === 'published') {
+      targetPublishedAt = input.publishedAt ? new Date(input.publishedAt) : new Date();
+    } else if (input.publishedAt) {
+      targetPublishedAt = new Date(input.publishedAt);
+    } else {
+      targetPublishedAt = null;
+    }
+
     const [insertRes] = await tx.insert(contentTranslations).values({
       contentId,
       langCode: input.langCode,
@@ -205,6 +230,10 @@ export async function upsertTranslationTx(
       summary: input.summary || null,
       body: processed.sanitizedHtml,
       bodySearchable: processed.bodySearchable,
+      status: targetStatus,
+      pdfEnabled: targetPdfEnabled,
+      publishedAt: targetPublishedAt,
+      viewCount: 0,
       pdfFilePath: null,
       pdfGeneratedAt: null,
     });
@@ -218,6 +247,9 @@ export async function upsertTranslationTx(
     title: input.title,
     slug,
     summary: input.summary || null,
+    status: targetStatus,
+    pdfEnabled: targetPdfEnabled,
+    publishedAt: targetPublishedAt,
     isUpdate,
   };
 }
@@ -271,14 +303,6 @@ export async function createArticleController(req: Request, res: Response): Prom
     seenLangs.add(t.langCode);
   }
 
-  // Determine publishedAt timestamp
-  let publishedAt: Date | null = null;
-  if (data.status === 'published') {
-    publishedAt = data.publishedAt ? new Date(data.publishedAt) : new Date();
-  } else if (data.publishedAt) {
-    publishedAt = new Date(data.publishedAt);
-  }
-
   // 4. Atomic Database Transaction
   const transactionResult = await runWithTransactionRetry(() =>
     db.transaction(async (tx) => {
@@ -287,10 +311,6 @@ export async function createArticleController(req: Request, res: Response): Prom
         categoryId: data.categoryId,
         authorName: data.authorName || null,
         coverImage: data.coverImage || null,
-        status: data.status || 'draft',
-        pdfEnabled: data.pdfEnabled ?? 0,
-        publishedAt,
-        viewCount: 0,
       });
       const contentId = contentInsert.insertId;
 
@@ -339,8 +359,11 @@ export async function createArticleController(req: Request, res: Response): Prom
   invalidateTagCaches();
   void refreshSearchIndex();
 
-  if (data.status === 'published' && data.pdfEnabled) {
-    void eagerGenerateArticlePdfs(transactionResult.contentId, true);
+  // Eager generate PDFs for each published & PDF-enabled translation
+  for (const t of transactionResult.translations) {
+    if (t.status === 'published' && t.pdfEnabled) {
+      void eagerGenerateSingleTranslationPdf(transactionResult.contentId, t.langCode, true);
+    }
   }
 
   sendSuccess(
@@ -350,9 +373,6 @@ export async function createArticleController(req: Request, res: Response): Prom
       categoryId: data.categoryId,
       authorName: data.authorName || null,
       coverImage: data.coverImage || null,
-      status: data.status || 'draft',
-      pdfEnabled: data.pdfEnabled ?? 0,
-      publishedAt,
       translations: transactionResult.translations,
     },
     undefined,
@@ -362,8 +382,8 @@ export async function createArticleController(req: Request, res: Response): Prom
 
 /**
  * PUT /api/v1/admin/articles/:id
- * Update article metadata, tags, media, and translations.
- * Preserves omitted fields (status, pdfEnabled, authorName, etc.).
+ * Update article container metadata, tags, media, and translations.
+ * Preserves omitted fields.
  * Sweeps orphaned translation PDFs and replaced cover images from disk.
  */
 export async function updateArticleController(req: Request, res: Response): Promise<void> {
@@ -430,26 +450,11 @@ export async function updateArticleController(req: Request, res: Response): Prom
       const targetCategoryId = data.categoryId ?? existingContent.categoryId;
       const targetAuthorName = data.authorName !== undefined ? (data.authorName || null) : existingContent.authorName;
       const targetCoverImage = data.coverImage !== undefined ? (data.coverImage || null) : existingContent.coverImage;
-      const targetStatus = data.status ?? (existingContent.status || 'draft');
-      const targetPdfEnabled = data.pdfEnabled !== undefined ? data.pdfEnabled : (existingContent.pdfEnabled ?? 0);
 
       // Track replaced cover image for post-transaction unlink
       let oldCoverToUnlink: string | null = null;
       if (data.coverImage !== undefined && existingContent.coverImage && existingContent.coverImage !== data.coverImage) {
         oldCoverToUnlink = existingContent.coverImage;
-      }
-
-      // Determine publishedAt timestamp
-      let targetPublishedAt: Date | null = existingContent.publishedAt;
-      if (targetStatus === 'published') {
-        if (data.publishedAt) {
-          targetPublishedAt = new Date(data.publishedAt);
-        } else if (!targetPublishedAt) {
-          // Transition from draft/archived -> published without explicit date: set to now
-          targetPublishedAt = new Date();
-        }
-      } else if (data.publishedAt !== undefined) {
-        targetPublishedAt = data.publishedAt ? new Date(data.publishedAt) : null;
       }
 
       // 4b. Update Master Content Container
@@ -459,10 +464,6 @@ export async function updateArticleController(req: Request, res: Response): Prom
           categoryId: targetCategoryId,
           authorName: targetAuthorName,
           coverImage: targetCoverImage,
-          status: targetStatus,
-          pdfEnabled: targetPdfEnabled,
-          publishedAt: targetPublishedAt,
-          updatedAt: new Date(),
         })
         .where(eq(content.id, articleId));
 
@@ -506,6 +507,9 @@ export async function updateArticleController(req: Request, res: Response): Prom
         title: string;
         slug: string;
         summary: string | null;
+        status: 'draft' | 'published' | 'archived';
+        pdfEnabled: number;
+        publishedAt: Date | null;
         isUpdate: boolean;
       }> = [];
 
@@ -540,6 +544,9 @@ export async function updateArticleController(req: Request, res: Response): Prom
           title: t.title,
           slug: t.slug,
           summary: t.summary,
+          status: t.status,
+          pdfEnabled: t.pdfEnabled,
+          publishedAt: t.publishedAt,
           isUpdate: true,
         }));
       }
@@ -549,9 +556,6 @@ export async function updateArticleController(req: Request, res: Response): Prom
         categoryId: targetCategoryId,
         authorName: targetAuthorName,
         coverImage: targetCoverImage,
-        status: targetStatus,
-        pdfEnabled: targetPdfEnabled,
-        publishedAt: targetPublishedAt,
         translations: updatedTranslations,
         deletedTranslationLangs,
         oldCoverToUnlink,
@@ -597,8 +601,11 @@ export async function updateArticleController(req: Request, res: Response): Prom
   invalidateTagCaches();
   void refreshSearchIndex();
 
-  if (transactionResult.status === 'published' && transactionResult.pdfEnabled) {
-    void eagerGenerateArticlePdfs(articleId, true);
+  // 5d. Eagerly generate PDFs for each published & PDF-enabled translation
+  for (const t of transactionResult.translations) {
+    if (t.status === 'published' && t.pdfEnabled) {
+      void eagerGenerateSingleTranslationPdf(articleId, t.langCode, true);
+    }
   }
 
   sendSuccess(
@@ -608,9 +615,6 @@ export async function updateArticleController(req: Request, res: Response): Prom
       categoryId: transactionResult.categoryId,
       authorName: transactionResult.authorName,
       coverImage: transactionResult.coverImage,
-      status: transactionResult.status,
-      pdfEnabled: transactionResult.pdfEnabled,
-      publishedAt: transactionResult.publishedAt,
       translations: transactionResult.translations,
     },
     undefined,
@@ -718,9 +722,6 @@ export async function upsertTranslationController(req: Request, res: Response): 
       // 2. Upsert translation
       const translationResult = await upsertTranslationTx(tx, articleId, data);
 
-      // 3. Update parent container updatedAt timestamp
-      await tx.update(content).set({ updatedAt: new Date() }).where(eq(content.id, articleId));
-
       return {
         parent,
         translation: translationResult,
@@ -732,10 +733,70 @@ export async function upsertTranslationController(req: Request, res: Response): 
   invalidateArticleCaches();
   void refreshSearchIndex();
 
-  // If article is published and pdfEnabled, trigger eager single-translation PDF generation
-  if (result.parent.status === 'published' && result.parent.pdfEnabled) {
+  // If this translation is published and pdfEnabled, trigger eager single-translation PDF generation
+  if (result.translation.status === 'published' && result.translation.pdfEnabled) {
     void eagerGenerateSingleTranslationPdf(articleId, result.translation.langCode, true);
   }
 
   sendSuccess(res, result.translation, undefined, result.translation.isUpdate ? 200 : 201);
+}
+
+/**
+ * DELETE /api/v1/admin/articles/:id/translations/:langCode
+ * Delete a specific language translation row, sweep its static PDFs from disk, and evict caches.
+ */
+export async function deleteTranslationController(req: Request, res: Response): Promise<void> {
+  const articleId = Number(req.params.id);
+  const langCode = req.params.langCode as 'am' | 'en' | 'om' | 'ti';
+
+  if (!articleId || isNaN(articleId) || articleId <= 0) {
+    throw new BadRequestError('Invalid or missing article ID in request parameters');
+  }
+
+  if (!['am', 'en', 'om', 'ti'].includes(langCode)) {
+    throw new BadRequestError(`Invalid language code '${langCode}'. Must be one of: am, en, om, ti`);
+  }
+
+  // 1. Atomic Database Deletion
+  await runWithTransactionRetry(() =>
+    db.transaction(async (tx) => {
+      const existing = await tx
+        .select({ id: contentTranslations.id })
+        .from(contentTranslations)
+        .where(
+          and(
+            eq(contentTranslations.contentId, articleId),
+            eq(contentTranslations.langCode, langCode)
+          )
+        )
+        .limit(1);
+
+      if (existing.length === 0) {
+        throw new NotFoundError(`Translation '${langCode}' for article #${articleId} not found`);
+      }
+
+      await tx.delete(contentTranslations).where(eq(contentTranslations.id, existing[0].id));
+    })
+  );
+
+  // 2. Post-Transaction Side Effects
+  // 2a. Delete static PDFs for this translation on disk
+  try {
+    const files = await fs.promises.readdir(config.storage.pdfDir);
+    const prefix = `article_${articleId}_`;
+    const suffix = `_${langCode}.pdf`;
+    for (const file of files) {
+      if (file.startsWith(prefix) && file.endsWith(suffix)) {
+        await fs.promises.unlink(path.join(config.storage.pdfDir, file)).catch(() => {});
+      }
+    }
+  } catch (pdfErr) {
+    console.warn(`⚠️ [PDFService] Error sweeping PDFs for deleted translation #${articleId} [${langCode}]:`, pdfErr);
+  }
+
+  // 2b. Evict caches
+  invalidateArticleCaches();
+  void refreshSearchIndex();
+
+  sendSuccess(res, { deleted: true, contentId: articleId, langCode }, undefined, 200);
 }
