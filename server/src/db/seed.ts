@@ -138,10 +138,6 @@ async function seed() {
         categoryId: catId,
         authorName: 'ዘአትናቴዎስ (Sons of Athanasius)',
         coverImage: 'https://images.unsplash.com/photo-1548625361-195fe578ae5a?q=80&w=1200&auto=format&fit=crop',
-        status: 'published',
-        pdfEnabled: 1,
-        viewCount: 154,
-        publishedAt: new Date(),
       });
       articleId = contentInsert.insertId;
     } else {
@@ -162,11 +158,18 @@ async function seed() {
         summary: 'ስለ ጌታችን መድኃኒታችን ኢየሱስ ክርስቶስ ፍጹም አምላክነትና ፍጹም ሰውነት የተሰጠ ኦርቶዶክሳዊ ትምህርት።',
         body: amharicProcessed.sanitizedHtml,
         bodySearchable: amharicProcessed.bodySearchable,
+        status: 'published',
+        pdfEnabled: 1,
+        viewCount: 154,
+        publishedAt: new Date(),
       });
     } else {
       await db.update(contentTranslations).set({
         body: amharicProcessed.sanitizedHtml,
         bodySearchable: amharicProcessed.bodySearchable,
+        status: 'published',
+        pdfEnabled: 1,
+        publishedAt: new Date(),
       }).where(eq(contentTranslations.id, existingAm[0].id));
     }
 
@@ -184,11 +187,18 @@ async function seed() {
         summary: 'An Orthodox theological exposition on the true divinity and perfect humanity of our Lord Jesus Christ.',
         body: englishProcessed.sanitizedHtml,
         bodySearchable: englishProcessed.bodySearchable,
+        status: 'published',
+        pdfEnabled: 1,
+        viewCount: 85,
+        publishedAt: new Date(),
       });
     } else {
       await db.update(contentTranslations).set({
         body: englishProcessed.sanitizedHtml,
         bodySearchable: englishProcessed.bodySearchable,
+        status: 'published',
+        pdfEnabled: 1,
+        publishedAt: new Date(),
       }).where(eq(contentTranslations.id, existingEn[0].id));
     }
 

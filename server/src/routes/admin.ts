@@ -6,6 +6,9 @@ import {
   updateArticleController,
   deleteArticleController,
   upsertTranslationController,
+  deleteTranslationController,
+  listPdfJobsController,
+  retryPdfJobController,
 } from '../controllers/adminController.js';
 import { uploadCoverController } from '../controllers/uploadController.js';
 
@@ -63,6 +66,18 @@ router.post(
   upsertTranslationController
 );
 
+/**
+ * Delete a specific language translation for an existing article
+ * DELETE /api/v1/admin/articles/:id/translations/:langCode
+ */
+router.delete(
+  '/articles/:id/translations/:langCode',
+  adminLimiter,
+  verifyAdminSession,
+  requireRole('superadmin', 'editor'),
+  deleteTranslationController
+);
+
 // ==========================================
 // 2. ADMIN MEDIA UPLOADS
 // ==========================================
@@ -77,6 +92,34 @@ router.post(
   verifyAdminSession,
   requireRole('superadmin', 'editor'),
   uploadCoverController
+);
+
+// ==========================================
+// 3. ADMIN PDF QUEUE OBSERVABILITY
+// ==========================================
+
+/**
+ * List recent PDF generation jobs
+ * GET /api/v1/admin/pdf-jobs
+ */
+router.get(
+  '/pdf-jobs',
+  adminLimiter,
+  verifyAdminSession,
+  requireRole('superadmin', 'editor'),
+  listPdfJobsController
+);
+
+/**
+ * Requeue a failed PDF job
+ * POST /api/v1/admin/pdf-jobs/:id/retry
+ */
+router.post(
+  '/pdf-jobs/:id/retry',
+  adminLimiter,
+  verifyAdminSession,
+  requireRole('superadmin', 'editor'),
+  retryPdfJobController
 );
 
 export default router;

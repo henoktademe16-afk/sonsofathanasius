@@ -91,6 +91,9 @@ export function errorHandler(
 }
 
 // 5. 404 Route Not Found Handler
+//    Do NOT reflect req.originalUrl in the response (attacker-controlled input);
+//    keep the detail server-side in the log only.
 export function notFoundHandler(req: Request, res: Response) {
-  return sendError(res, `API route not found: ${req.method} ${req.originalUrl}`, 404);
+  console.warn(`🔍 404: ${req.method} ${req.originalUrl}`);
+  return sendError(res, 'Route not found', 404);
 }

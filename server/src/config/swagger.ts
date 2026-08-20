@@ -32,6 +32,7 @@ export const openApiSpec = {
     { name: 'Search', description: 'Amharic homophone normalized in-memory full-text search' },
     { name: 'PDF', description: 'Pure JavaScript dynamic PDF export with localized Ethiopic typography' },
     { name: 'Admin', description: 'Protected content management endpoints (Session cookie required)' },
+    { name: 'Contact', description: 'Public contact and inquiry form submission (highly rate-limited)' },
   ],
   paths: {
     '/health': {
@@ -341,7 +342,7 @@ export const openApiSpec = {
       get: {
         tags: ['Articles', 'PDF'],
         summary: 'Download Article PDF',
-        description: 'Streams static pre-generated A4 PDF document with Unicode NFC normalization and localized typography. Generates on-the-fly if missing.',
+        description: 'Streams static pre-generated A4 PDF document with Unicode NFC normalization and localized typography. If the PDF is generating, responds with HTTP 202 Accepted and a Retry-After header.',
         parameters: [
           {
             name: 'slug',
@@ -364,6 +365,33 @@ export const openApiSpec = {
             content: {
               'application/pdf': {
                 schema: { type: 'string', format: 'binary' },
+              },
+            },
+          },
+          '202': {
+            description: 'PDF generation enqueued in background',
+            headers: {
+              'Retry-After': {
+                description: 'Estimated seconds before the PDF is ready',
+                schema: { type: 'integer', example: 5 },
+              },
+            },
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        status: { type: 'string', example: 'generating' },
+                        retryAfter: { type: 'integer', example: 5 },
+                        message: { type: 'string', example: 'PDF generation in progress. Please retry in 5 seconds.' },
+                      },
+                    },
+                  },
+                },
               },
             },
           },
@@ -714,9 +742,6 @@ export const openApiSpec = {
                   categoryId: { type: 'integer', example: 1 },
                   authorName: { type: 'string', example: 'ዘአትናቴዎስ' },
                   coverImage: { type: 'string', example: '/uploads/covers/cover_sample.webp' },
-                  status: { type: 'string', enum: ['draft', 'published', 'archived'], default: 'draft' },
-                  pdfEnabled: { type: 'integer', enum: [0, 1], default: 0 },
-                  publishedAt: { type: 'string', format: 'date-time' },
                   tagIds: { type: 'array', items: { type: 'integer' }, example: [1, 2] },
                   media: {
                     type: 'array',
@@ -744,6 +769,9 @@ export const openApiSpec = {
                         slug: { type: 'string', example: 'deity-of-jesus-christ' },
                         summary: { type: 'string', example: 'ጥናታዊ የዕቅበተ እምነት ጽሑፍ።' },
                         body: { type: 'string', example: '<p>የጌታችን አምላክነት...</p>' },
+                        status: { type: 'string', enum: ['draft', 'published', 'archived'], default: 'draft' },
+                        pdfEnabled: { type: 'integer', enum: [0, 1], default: 0 },
+                        publishedAt: { type: 'string', format: 'date-time' },
                       },
                     },
                   },
@@ -767,8 +795,22 @@ export const openApiSpec = {
                         id: { type: 'integer', example: 42 },
                         categoryId: { type: 'integer', example: 1 },
                         authorName: { type: 'string', example: 'ዘአትናቴዎስ' },
-                        status: { type: 'string', example: 'published' },
-                        pdfEnabled: { type: 'integer', example: 1 },
+                        coverImage: { type: 'string', example: '/uploads/covers/cover_sample.webp' },
+                        translations: {
+                          type: 'array',
+                          items: {
+                            type: 'object',
+                            properties: {
+                              id: { type: 'integer', example: 88 },
+                              contentId: { type: 'integer', example: 42 },
+                              langCode: { type: 'string', example: 'am' },
+                              title: { type: 'string', example: 'የኢየሱስ ክርስቶስ አምላክነት' },
+                              slug: { type: 'string', example: 'deity-of-jesus-christ' },
+                              status: { type: 'string', example: 'published' },
+                              pdfEnabled: { type: 'integer', example: 1 },
+                            },
+                          },
+                        },
                       },
                     },
                   },
@@ -779,6 +821,98 @@ export const openApiSpec = {
           '400': { description: 'Invalid payload or schema validation error' },
           '401': { description: 'Unauthorized' },
           '403': { description: 'Forbidden (Requires Superadmin or Editor role)' },
+        },
+      },
+    },
+    '/admin/articles/{id}': {
+      put: {
+        tags: ['Admin'],
+        summary: 'Update Article',
+        description: 'Updates article metadata, attached tags, media, and multilingual translations with full-replace semantics.',
+        security: [{ SessionAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'integer' },
+            description: 'Parent article numeric ID',
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  categoryId: { type: 'integer', example: 1 },
+                  authorName: { type: 'string', example: 'ዘአትናቴዎስ' },
+                  coverImage: { type: 'string', example: '/uploads/covers/cover_sample.webp' },
+                  tagIds: { type: 'array', items: { type: 'integer' } },
+                  media: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: ['mediaKind', 'platform', 'embedId'],
+                      properties: {
+                        mediaKind: { type: 'string', enum: ['video', 'audio'] },
+                        platform: { type: 'string', example: 'youtube' },
+                        embedId: { type: 'string', example: 'dQw4w9WgXcQ' },
+                        caption: { type: 'string' },
+                        sortOrder: { type: 'integer' },
+                      },
+                    },
+                  },
+                  translations: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: ['langCode', 'title', 'body'],
+                      properties: {
+                        langCode: { type: 'string', enum: ['am', 'en', 'om', 'ti'] },
+                        title: { type: 'string' },
+                        slug: { type: 'string' },
+                        summary: { type: 'string' },
+                        body: { type: 'string' },
+                        status: { type: 'string', enum: ['draft', 'published', 'archived'] },
+                        pdfEnabled: { type: 'integer', enum: [0, 1] },
+                        publishedAt: { type: 'string', format: 'date-time' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Article updated successfully' },
+          '400': { description: 'Invalid payload' },
+          '401': { description: 'Unauthorized' },
+          '403': { description: 'Forbidden (Requires Superadmin or Editor role)' },
+          '404': { description: 'Article not found' },
+        },
+      },
+      delete: {
+        tags: ['Admin'],
+        summary: 'Delete Article Container',
+        description: 'Permanently deletes article container and cascades all translations, media, tags, and static PDFs on disk.',
+        security: [{ SessionAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'integer' },
+            description: 'Article numeric ID',
+          },
+        ],
+        responses: {
+          '200': { description: 'Article deleted successfully' },
+          '401': { description: 'Unauthorized' },
+          '403': { description: 'Forbidden (Requires Superadmin role)' },
+          '404': { description: 'Article not found' },
         },
       },
     },
@@ -810,6 +944,9 @@ export const openApiSpec = {
                   slug: { type: 'string', example: 'deity-of-christ-tigrigna' },
                   summary: { type: 'string', example: 'ትምህርቲ ተዋህዶ ብትግርኛ' },
                   body: { type: 'string', example: '<p>ትምህርቲ ብዛዕባ ጎይታና...</p>' },
+                  status: { type: 'string', enum: ['draft', 'published', 'archived'], default: 'draft' },
+                  pdfEnabled: { type: 'integer', enum: [0, 1], default: 0 },
+                  publishedAt: { type: 'string', format: 'date-time' },
                 },
               },
             },
@@ -822,6 +959,139 @@ export const openApiSpec = {
           '401': { description: 'Unauthorized' },
           '403': { description: 'Forbidden (Requires Superadmin, Editor, or Translator role)' },
           '404': { description: 'Parent article not found' },
+        },
+      },
+    },
+    '/admin/articles/{id}/translations/{langCode}': {
+      delete: {
+        tags: ['Admin'],
+        summary: 'Delete Article Translation',
+        description: 'Deletes a specific translation language row and cleans up its static PDFs on disk.',
+        security: [{ SessionAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'integer' },
+            description: 'Parent article numeric ID',
+          },
+          {
+            name: 'langCode',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', enum: ['am', 'en', 'om', 'ti'] },
+            description: 'Translation language code',
+          },
+        ],
+        responses: {
+          '200': { description: 'Translation deleted successfully' },
+          '400': { description: 'Invalid article ID or language code' },
+          '401': { description: 'Unauthorized' },
+          '403': { description: 'Forbidden (Requires Superadmin or Editor role)' },
+          '404': { description: 'Translation not found' },
+        },
+      },
+    },
+    '/admin/pdf-jobs': {
+      get: {
+        tags: ['Admin', 'PDF'],
+        summary: 'List PDF Generation Jobs',
+        description: 'Lists recent background PDF queue generation jobs with status, attempts, error trace, and file paths.',
+        security: [{ SessionAuth: [] }],
+        parameters: [
+          {
+            name: 'limit',
+            in: 'query',
+            required: false,
+            schema: { type: 'integer', default: 50 },
+            description: 'Maximum number of jobs to return (max 100)',
+          },
+          {
+            name: 'status',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', enum: ['queued', 'processing', 'completed', 'failed'] },
+            description: 'Filter jobs by status',
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'List of PDF jobs',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    data: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          id: { type: 'integer' },
+                          contentId: { type: 'integer' },
+                          langCode: { type: 'string', enum: ['am', 'en', 'om', 'ti'] },
+                          status: { type: 'string', enum: ['queued', 'processing', 'completed', 'failed'] },
+                          attempts: { type: 'integer' },
+                          version: { type: 'integer' },
+                          lastError: { type: 'string', nullable: true },
+                          pdfFilePath: { type: 'string', nullable: true },
+                          createdAt: { type: 'string', format: 'date-time' },
+                          updatedAt: { type: 'string', format: 'date-time' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '401': { description: 'Unauthorized' },
+          '403': { description: 'Forbidden (Requires Superadmin or Editor role)' },
+        },
+      },
+    },
+    '/admin/pdf-jobs/{id}/retry': {
+      post: {
+        tags: ['Admin', 'PDF'],
+        summary: 'Retry Failed PDF Job',
+        description: 'Manually resets attempts and requeues a failed PDF job for rendering.',
+        security: [{ SessionAuth: [] }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'integer' },
+            description: 'PDF Job ID',
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Job requeued successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        retried: { type: 'boolean', example: true },
+                        id: { type: 'integer', example: 1 },
+                      },
+                    },
+                    message: { type: 'string', example: 'Job requeued successfully for generation' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Job not found or not in failed state' },
+          '401': { description: 'Unauthorized' },
+          '403': { description: 'Forbidden (Requires Superadmin or Editor role)' },
         },
       },
     },
@@ -982,7 +1252,8 @@ export const openApiSpec = {
       ArticleListItem: {
         type: 'object',
         properties: {
-          id: { type: 'integer', example: 1 },
+          id: { type: 'integer', example: 88, description: 'Translation unique ID' },
+          contentId: { type: 'integer', example: 1, description: 'Parent article container ID' },
           slug: { type: 'string', example: 'deity-of-jesus-christ-scripture' },
           title: { type: 'string', example: 'የኢየሱስ ክርስቶስ አምላክነት በቅዱሳት መጻሕፍት ብርሃን' },
           summary: { type: 'string', example: 'ጥናታዊ የዕቅበተ እምነት ማብራሪያ።' },
@@ -1017,7 +1288,8 @@ export const openApiSpec = {
       ArticleDetail: {
         type: 'object',
         properties: {
-          id: { type: 'integer', example: 1 },
+          id: { type: 'integer', example: 88, description: 'Translation unique ID' },
+          contentId: { type: 'integer', example: 1, description: 'Parent article container ID' },
           categoryId: { type: 'integer', example: 1 },
           category: {
             type: 'object',
@@ -1066,6 +1338,7 @@ export const openApiSpec = {
             items: {
               type: 'object',
               properties: {
+                id: { type: 'integer', example: 88 },
                 langCode: { type: 'string', example: 'am' },
                 slug: { type: 'string', example: 'deity-of-jesus-christ-scripture' },
                 title: { type: 'string', example: 'የኢየሱስ ክርስቶስ አምላክነት...' },

@@ -21,14 +21,15 @@ import {
 } from '../validators/publicQueryValidator.js';
 
 export interface ArticleListItem {
-  id: number;
+  id: number; // Translation ID
+  contentId: number; // Container ID
   slug: string;
   title: string;
   summary: string | null;
   authorName: string | null;
   coverImage: string | null;
-  pdfEnabled: number | null;
-  viewCount: number | null;
+  pdfEnabled: number;
+  viewCount: number;
   publishedAt: Date | null;
   langCode: string;
   isFallback: boolean;
@@ -45,7 +46,8 @@ export interface ArticleListItem {
 }
 
 export interface ArticleDetailResponse {
-  id: number;
+  id: number; // Translation ID
+  contentId: number; // Container ID
   categoryId: number;
   category: {
     id: number;
@@ -54,8 +56,8 @@ export interface ArticleDetailResponse {
   };
   authorName: string | null;
   coverImage: string | null;
-  pdfEnabled: number | null;
-  viewCount: number | null;
+  pdfEnabled: number;
+  viewCount: number;
   publishedAt: Date | null;
   updatedAt: Date | null;
   langCode: string;
@@ -80,6 +82,7 @@ export interface ArticleDetailResponse {
     caption: string | null;
   }>;
   availableTranslations: Array<{
+    id: number;
     langCode: string;
     slug: string;
     title: string;
@@ -120,8 +123,10 @@ export async function getArticles(req: Request, _res: Response) {
   const { lang, category, tag, page, limit, sort } = query;
   const offset = (page - 1) * limit;
 
-  // Build conditions for published articles using SQL EXISTS for category and tag
-  const conditions = [eq(content.status, 'published')];
+  // Build conditions: container must have at least one published translation
+  const conditions = [
+    sql`EXISTS (SELECT 1 FROM ${contentTranslations} WHERE ${contentTranslations.contentId} = ${content.id} AND ${contentTranslations.status} = 'published')`,
+  ];
 
   if (category) {
     conditions.push(
@@ -142,8 +147,14 @@ export async function getArticles(req: Request, _res: Response) {
   const whereClause = and(...conditions);
 
   const sortClause = sort === 'popular'
-    ? [desc(content.viewCount), desc(content.publishedAt)]
-    : [desc(content.publishedAt), desc(content.id)];
+    ? [
+        desc(sql`(SELECT COALESCE(MAX(CASE WHEN ${contentTranslations.langCode} = ${lang} THEN ${contentTranslations.viewCount} END), MAX(${contentTranslations.viewCount})) FROM ${contentTranslations} WHERE ${contentTranslations.contentId} = ${content.id} AND ${contentTranslations.status} = 'published')`),
+        desc(sql`(SELECT COALESCE(MAX(CASE WHEN ${contentTranslations.langCode} = ${lang} THEN ${contentTranslations.publishedAt} END), MAX(${contentTranslations.publishedAt})) FROM ${contentTranslations} WHERE ${contentTranslations.contentId} = ${content.id} AND ${contentTranslations.status} = 'published')`),
+      ]
+    : [
+        desc(sql`(SELECT COALESCE(MAX(CASE WHEN ${contentTranslations.langCode} = ${lang} THEN ${contentTranslations.publishedAt} END), MAX(${contentTranslations.publishedAt})) FROM ${contentTranslations} WHERE ${contentTranslations.contentId} = ${content.id} AND ${contentTranslations.status} = 'published')`),
+        desc(content.id),
+      ];
 
   // Run COUNT(*) and paginated list queries in Promise.all
   const [countRows, matchedArticles] = await Promise.all([
@@ -157,9 +168,6 @@ export async function getArticles(req: Request, _res: Response) {
         categoryId: content.categoryId,
         authorName: content.authorName,
         coverImage: content.coverImage,
-        pdfEnabled: content.pdfEnabled,
-        viewCount: content.viewCount,
-        publishedAt: content.publishedAt,
         catId: categories.id,
         catSlug: categories.slug,
         catNameEn: categories.nameEn,
@@ -200,12 +208,17 @@ export async function getArticles(req: Request, _res: Response) {
 
   const contentIds = matchedArticles.map((a) => a.id);
 
-  // Batch fetch translations and tags for matched articles in parallel
+  // Batch fetch ONLY published translations and tags for matched articles in parallel
   const [allTranslations, articleTagsRows] = await Promise.all([
     db
       .select()
       .from(contentTranslations)
-      .where(inArray(contentTranslations.contentId, contentIds)),
+      .where(
+        and(
+          inArray(contentTranslations.contentId, contentIds),
+          eq(contentTranslations.status, 'published')
+        )
+      ),
     db
       .select({
         contentId: contentTags.contentId,
@@ -232,59 +245,65 @@ export async function getArticles(req: Request, _res: Response) {
     tagsByContent.set(row.contentId, list);
   }
 
-  // Assemble localized items with smart fallback
-  const items: ArticleListItem[] = matchedArticles.map((article) => {
-    const translations = translationsByContent.get(article.id) || [];
-    
-    // Attempt requested language
-    let chosen = translations.find((t) => t.langCode.toLowerCase() === lang);
-    let isFallback = false;
+  // Assemble localized items with smart published fallback
+  const items: ArticleListItem[] = matchedArticles
+    .map((article) => {
+      const translations = translationsByContent.get(article.id) || [];
+      if (translations.length === 0) return null;
 
-    // Fallback to Amharic if requested lang is not found
-    if (!chosen) {
-      chosen = translations.find((t) => t.langCode.toLowerCase() === 'am');
-      if (chosen) {
+      // Attempt requested language
+      let chosen = translations.find((t) => t.langCode.toLowerCase() === lang.toLowerCase());
+      let isFallback = false;
+
+      // Fallback to Amharic if requested lang is not published
+      if (!chosen) {
+        chosen = translations.find((t) => t.langCode.toLowerCase() === 'am');
+        if (chosen) {
+          isFallback = true;
+        }
+      }
+
+      // Fallback to first available published translation if neither requested nor Amharic exists
+      if (!chosen && translations.length > 0) {
+        chosen = translations[0];
         isFallback = true;
       }
-    }
 
-    // Fallback to first available translation if neither requested nor Amharic exists
-    if (!chosen && translations.length > 0) {
-      chosen = translations[0];
-      isFallback = true;
-    }
+      if (!chosen) return null;
 
-    const localizedCategoryName = getLocalizedCategoryName(
-      {
-        nameAm: article.catNameAm,
-        nameEn: article.catNameEn,
-        nameOm: article.catNameOm,
-        nameTi: article.catNameTi,
-        slug: article.catSlug,
-      },
-      lang
-    );
+      const localizedCategoryName = getLocalizedCategoryName(
+        {
+          nameAm: article.catNameAm,
+          nameEn: article.catNameEn,
+          nameOm: article.catNameOm,
+          nameTi: article.catNameTi,
+          slug: article.catSlug,
+        },
+        lang
+      );
 
-    return {
-      id: article.id,
-      slug: chosen?.slug || `article-${article.id}`,
-      title: chosen?.title || 'Untitled',
-      summary: chosen?.summary || null,
-      authorName: article.authorName,
-      coverImage: article.coverImage,
-      pdfEnabled: article.pdfEnabled,
-      viewCount: article.viewCount,
-      publishedAt: article.publishedAt,
-      langCode: chosen?.langCode || lang,
-      isFallback,
-      category: {
-        id: article.catId,
-        slug: article.catSlug,
-        name: localizedCategoryName,
-      },
-      tags: tagsByContent.get(article.id) || [],
-    };
-  });
+      return {
+        id: chosen.id,
+        contentId: article.id,
+        slug: chosen.slug,
+        title: chosen.title,
+        summary: chosen.summary || null,
+        authorName: article.authorName,
+        coverImage: article.coverImage,
+        pdfEnabled: chosen.pdfEnabled,
+        viewCount: chosen.viewCount,
+        publishedAt: chosen.publishedAt,
+        langCode: chosen.langCode,
+        isFallback,
+        category: {
+          id: article.catId,
+          slug: article.catSlug,
+          name: localizedCategoryName,
+        },
+        tags: tagsByContent.get(article.id) || [],
+      };
+    })
+    .filter((item): item is ArticleListItem => item !== null);
 
   return {
     success: true,
@@ -322,9 +341,6 @@ export async function getLatestArticles(req: Request, _res: Response) {
       categoryId: content.categoryId,
       authorName: content.authorName,
       coverImage: content.coverImage,
-      pdfEnabled: content.pdfEnabled,
-      viewCount: content.viewCount,
-      publishedAt: content.publishedAt,
       catId: categories.id,
       catSlug: categories.slug,
       catNameEn: categories.nameEn,
@@ -334,8 +350,13 @@ export async function getLatestArticles(req: Request, _res: Response) {
     })
     .from(content)
     .innerJoin(categories, eq(content.categoryId, categories.id))
-    .where(eq(content.status, 'published'))
-    .orderBy(desc(content.publishedAt), desc(content.id))
+    .where(
+      sql`EXISTS (SELECT 1 FROM ${contentTranslations} WHERE ${contentTranslations.contentId} = ${content.id} AND ${contentTranslations.status} = 'published')`
+    )
+    .orderBy(
+      desc(sql`(SELECT COALESCE(MAX(CASE WHEN ${contentTranslations.langCode} = ${lang} THEN ${contentTranslations.publishedAt} END), MAX(${contentTranslations.publishedAt})) FROM ${contentTranslations} WHERE ${contentTranslations.contentId} = ${content.id} AND ${contentTranslations.status} = 'published')`),
+      desc(content.id)
+    )
     .limit(limit);
 
   if (matchedArticles.length === 0) {
@@ -357,7 +378,12 @@ export async function getLatestArticles(req: Request, _res: Response) {
     db
       .select()
       .from(contentTranslations)
-      .where(inArray(contentTranslations.contentId, contentIds)),
+      .where(
+        and(
+          inArray(contentTranslations.contentId, contentIds),
+          eq(contentTranslations.status, 'published')
+        )
+      ),
     db
       .select({
         contentId: contentTags.contentId,
@@ -384,54 +410,61 @@ export async function getLatestArticles(req: Request, _res: Response) {
     tagsByContent.set(row.contentId, list);
   }
 
-  const items: ArticleListItem[] = matchedArticles.map((article) => {
-    const translations = translationsByContent.get(article.id) || [];
-    let chosen = translations.find((t) => t.langCode.toLowerCase() === lang);
-    let isFallback = false;
+  const items: ArticleListItem[] = matchedArticles
+    .map((article) => {
+      const translations = translationsByContent.get(article.id) || [];
+      if (translations.length === 0) return null;
 
-    if (!chosen) {
-      chosen = translations.find((t) => t.langCode.toLowerCase() === 'am');
-      if (chosen) {
+      let chosen = translations.find((t) => t.langCode.toLowerCase() === lang.toLowerCase());
+      let isFallback = false;
+
+      if (!chosen) {
+        chosen = translations.find((t) => t.langCode.toLowerCase() === 'am');
+        if (chosen) {
+          isFallback = true;
+        }
+      }
+
+      if (!chosen && translations.length > 0) {
+        chosen = translations[0];
         isFallback = true;
       }
-    }
 
-    if (!chosen && translations.length > 0) {
-      chosen = translations[0];
-      isFallback = true;
-    }
+      if (!chosen) return null;
 
-    const localizedCategoryName = getLocalizedCategoryName(
-      {
-        nameAm: article.catNameAm,
-        nameEn: article.catNameEn,
-        nameOm: article.catNameOm,
-        nameTi: article.catNameTi,
-        slug: article.catSlug,
-      },
-      lang
-    );
+      const localizedCategoryName = getLocalizedCategoryName(
+        {
+          nameAm: article.catNameAm,
+          nameEn: article.catNameEn,
+          nameOm: article.catNameOm,
+          nameTi: article.catNameTi,
+          slug: article.catSlug,
+        },
+        lang
+      );
 
-    return {
-      id: article.id,
-      slug: chosen?.slug || `article-${article.id}`,
-      title: chosen?.title || 'Untitled',
-      summary: chosen?.summary || null,
-      authorName: article.authorName,
-      coverImage: article.coverImage,
-      pdfEnabled: article.pdfEnabled,
-      viewCount: article.viewCount,
-      publishedAt: article.publishedAt,
-      langCode: chosen?.langCode || lang,
-      isFallback,
-      category: {
-        id: article.catId,
-        slug: article.catSlug,
-        name: localizedCategoryName,
-      },
-      tags: tagsByContent.get(article.id) || [],
-    };
-  });
+      return {
+        id: chosen.id,
+        contentId: article.id,
+        slug: chosen.slug,
+        title: chosen.title,
+        summary: chosen.summary || null,
+        authorName: article.authorName,
+        coverImage: article.coverImage,
+        pdfEnabled: chosen.pdfEnabled,
+        viewCount: chosen.viewCount,
+        publishedAt: chosen.publishedAt,
+        langCode: chosen.langCode,
+        isFallback,
+        category: {
+          id: article.catId,
+          slug: article.catSlug,
+          name: localizedCategoryName,
+        },
+        tags: tagsByContent.get(article.id) || [],
+      };
+    })
+    .filter((item): item is ArticleListItem => item !== null);
 
   return {
     success: true,
@@ -460,41 +493,56 @@ export async function getArticleBySlug(req: Request, _res: Response) {
     throw new NotFoundError('Article slug is required');
   }
 
-  // 1. Resolve content translation by slug or ID
-  let contentId: number | null = null;
+  // 1. Resolve published content translation directly by slug or numeric ID (no draft fallback)
+  let initialTranslation: typeof contentTranslations.$inferSelect | null = null;
 
-  const matchedTranslation = await db
-    .select({ contentId: contentTranslations.contentId })
-    .from(contentTranslations)
-    .where(eq(contentTranslations.slug, slugParam))
-    .limit(1);
-
-  if (matchedTranslation.length > 0) {
-    contentId = matchedTranslation[0].contentId;
-  } else {
+  if (/^\d+$/.test(slugParam)) {
     const numericId = parseInt(slugParam, 10);
-    if (!isNaN(numericId) && String(numericId) === slugParam) {
-      contentId = numericId;
+    // Check translation id first, then fallback to container id
+    const byTransId = await db
+      .select()
+      .from(contentTranslations)
+      .where(and(eq(contentTranslations.id, numericId), eq(contentTranslations.status, 'published')))
+      .limit(1);
+
+    if (byTransId.length > 0) {
+      initialTranslation = byTransId[0];
+    } else {
+      const byContentId = await db
+        .select()
+        .from(contentTranslations)
+        .where(and(eq(contentTranslations.contentId, numericId), eq(contentTranslations.status, 'published')))
+        .limit(1);
+      if (byContentId.length > 0) {
+        initialTranslation = byContentId[0];
+      }
+    }
+  } else {
+    const bySlug = await db
+      .select()
+      .from(contentTranslations)
+      .where(and(eq(contentTranslations.slug, slugParam), eq(contentTranslations.status, 'published')))
+      .limit(1);
+
+    if (bySlug.length > 0) {
+      initialTranslation = bySlug[0];
     }
   }
 
-  if (!contentId) {
-    throw new NotFoundError(`Article not found: ${slugParam}`);
+  if (!initialTranslation) {
+    throw new NotFoundError(`Article not found or not published: ${slugParam}`);
   }
 
-  // 2. Parallelize queries for parent container, all translations, media, and tags
-  const [articleRows, translations, mediaRows, tagRows] = await Promise.all([
+  const contentId = initialTranslation.contentId;
+
+  // 2. Parallelize queries for parent container, published translations, media, and tags
+  const [articleRows, publishedTranslations, mediaRows, tagRows] = await Promise.all([
     db
       .select({
         id: content.id,
         categoryId: content.categoryId,
         authorName: content.authorName,
         coverImage: content.coverImage,
-        pdfEnabled: content.pdfEnabled,
-        viewCount: content.viewCount,
-        status: content.status,
-        publishedAt: content.publishedAt,
-        updatedAt: content.updatedAt,
         catId: categories.id,
         catSlug: categories.slug,
         catNameEn: categories.nameEn,
@@ -504,12 +552,12 @@ export async function getArticleBySlug(req: Request, _res: Response) {
       })
       .from(content)
       .innerJoin(categories, eq(content.categoryId, categories.id))
-      .where(and(eq(content.id, contentId), eq(content.status, 'published')))
+      .where(eq(content.id, contentId))
       .limit(1),
     db
       .select()
       .from(contentTranslations)
-      .where(eq(contentTranslations.contentId, contentId)),
+      .where(and(eq(contentTranslations.contentId, contentId), eq(contentTranslations.status, 'published'))),
     db
       .select({
         id: contentMedia.id,
@@ -533,24 +581,20 @@ export async function getArticleBySlug(req: Request, _res: Response) {
       .orderBy(asc(tags.name)),
   ]);
 
-  if (articleRows.length === 0) {
+  if (articleRows.length === 0 || publishedTranslations.length === 0) {
     throw new NotFoundError(`Article not found or not published: ${slugParam}`);
-  }
-
-  if (translations.length === 0) {
-    throw new NotFoundError(`No translation content found for article: ${contentId}`);
   }
 
   const article = articleRows[0];
 
-  // 3. Resolve translation with smart fallback
-  let chosenTranslation = translations.find((t) => t.langCode.toLowerCase() === requestedLang);
+  // 3. Resolve translation with smart fallback across published siblings
+  let chosenTranslation = publishedTranslations.find((t) => t.langCode.toLowerCase() === requestedLang.toLowerCase());
   let isFallback = false;
   let fallbackFrom: string | undefined;
 
   if (!chosenTranslation) {
-    // Fall back to Amharic
-    chosenTranslation = translations.find((t) => t.langCode.toLowerCase() === 'am');
+    // Fall back to published Amharic translation
+    chosenTranslation = publishedTranslations.find((t) => t.langCode.toLowerCase() === 'am');
     if (chosenTranslation) {
       isFallback = true;
       fallbackFrom = requestedLang;
@@ -558,8 +602,8 @@ export async function getArticleBySlug(req: Request, _res: Response) {
   }
 
   if (!chosenTranslation) {
-    // Fall back to first available
-    chosenTranslation = translations[0];
+    // Fall back to the initially resolved published translation
+    chosenTranslation = initialTranslation;
     isFallback = true;
     fallbackFrom = requestedLang;
   }
@@ -567,8 +611,9 @@ export async function getArticleBySlug(req: Request, _res: Response) {
   // 4. Extract scripture citations
   const citations = extractScriptureCitations(chosenTranslation.body);
 
-  // 5. Available translations list
-  const availableTranslations = translations.map((t) => ({
+  // 5. Available translations list (only published siblings)
+  const availableTranslations = publishedTranslations.map((t) => ({
+    id: t.id,
     langCode: t.langCode,
     slug: t.slug,
     title: t.title,
@@ -586,12 +631,13 @@ export async function getArticleBySlug(req: Request, _res: Response) {
     chosenTranslation.langCode
   );
 
-  // 7. Cache slug-to-ID mappings in memory for fast O(1) view tracking on cache HITs
-  recordSlugIdMapping(slugParam, article.id);
-  recordSlugIdMapping(chosenTranslation.slug, article.id);
+  // 7. Cache slug-to-translation-ID mappings for O(1) view tracking
+  recordSlugIdMapping(slugParam, chosenTranslation.id);
+  recordSlugIdMapping(chosenTranslation.slug, chosenTranslation.id);
 
   const responseData: ArticleDetailResponse = {
-    id: article.id,
+    id: chosenTranslation.id,
+    contentId: article.id,
     categoryId: article.categoryId,
     category: {
       id: article.catId,
@@ -600,10 +646,10 @@ export async function getArticleBySlug(req: Request, _res: Response) {
     },
     authorName: article.authorName,
     coverImage: article.coverImage,
-    pdfEnabled: article.pdfEnabled,
-    viewCount: article.viewCount,
-    publishedAt: article.publishedAt,
-    updatedAt: article.updatedAt,
+    pdfEnabled: chosenTranslation.pdfEnabled,
+    viewCount: chosenTranslation.viewCount,
+    publishedAt: chosenTranslation.publishedAt,
+    updatedAt: chosenTranslation.updatedAt,
     langCode: chosenTranslation.langCode,
     isFallback,
     fallbackFrom,

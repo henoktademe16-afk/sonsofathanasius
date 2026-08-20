@@ -1,0 +1,1 @@
+ALTER TABLE `content_translations` ADD `pdf_content_hash` varchar(64);

@@ -5,10 +5,24 @@ import path from 'path';
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
-const nodeEnv = (process.env.NODE_ENV || 'development').trim().toLowerCase();
+const ALLOWED_ENVS = ['development', 'production', 'test'] as const;
+type NodeEnv = (typeof ALLOWED_ENVS)[number];
+
+let rawNodeEnv = (process.env.NODE_ENV || 'development').trim().toLowerCase();
+if (!ALLOWED_ENVS.includes(rawNodeEnv as any)) {
+  console.warn(`⚠️ [Config] Unknown NODE_ENV '${rawNodeEnv}'. Defaulting to 'development'.`);
+  rawNodeEnv = 'development';
+}
+
+const nodeEnv = rawNodeEnv as NodeEnv;
 const isProduction = nodeEnv === 'production';
 const isTest = nodeEnv === 'test';
 const isDevelopment = nodeEnv === 'development';
+
+// Production fail-fast guard
+if (isProduction && !process.env.DB_PASSWORD) {
+  throw new Error('FATAL: DB_PASSWORD environment variable must be configured in production mode.');
+}
 
 export const config = {
   port: Number(process.env.PORT) || 5000,

@@ -1,6 +1,7 @@
 import {
   mysqlTable,
   int,
+  bigint,
   varchar,
   text,
   mediumtext,
@@ -33,25 +34,16 @@ export const categories = mysqlTable('categories', {
 });
 
 // ==========================================
-// 2. CORE CONTENT (ARTICLES) TABLE
+// 2. CORE CONTENT (CONTAINERS) TABLE
 // ==========================================
 export const content = mysqlTable('content', {
   id: int('id').autoincrement().primaryKey(),
   categoryId: int('category_id').notNull().references(() => categories.id),
   authorName: varchar('author_name', { length: 150 }),
   coverImage: varchar('cover_image', { length: 255 }),
-  status: mysqlEnum('status', ['draft', 'published', 'archived']).default('draft'),
-  
-  // PDF Export Flag
-  pdfEnabled: tinyint('pdf_enabled').default(0),
-  
-  viewCount: int('view_count').default(0),
-  publishedAt: timestamp('published_at'),
   createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow().onUpdateNow(),
 }, (table) => [
   index('idx_category').on(table.categoryId),
-  index('idx_status_published').on(table.status, table.publishedAt),
 ]);
 
 // ==========================================
@@ -67,13 +59,25 @@ export const contentTranslations = mysqlTable('content_translations', {
   body: mediumtext('body').notNull(), // Full Sanitized HTML (up to 16MB)
   bodySearchable: mediumtext('body_searchable').notNull(), // Stripped Plain Text (up to 16MB for full search indexing)
   
+  // Per-Translation Lifecycle & Publishing State
+  status: mysqlEnum('status', ['draft', 'published', 'archived']).default('draft').notNull(),
+  pdfEnabled: tinyint('pdf_enabled').default(0).notNull(),
+  viewCount: int('view_count').default(0).notNull(),
+  publishedAt: timestamp('published_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().onUpdateNow().notNull(),
+
   // Multilingual PDF Export Path & Timestamp
   pdfFilePath: varchar('pdf_file_path', { length: 255 }),
   pdfGeneratedAt: timestamp('pdf_generated_at'),
+  // sha256 over every field rendered into the PDF (langCode|title|authorName|publishedAt|categoryName|summary|body).
+  // Lets admin writes that do NOT change rendered content skip regeneration entirely.
+  pdfContentHash: varchar('pdf_content_hash', { length: 64 }),
 }, (table) => [
   uniqueIndex('uniq_content_lang').on(table.contentId, table.langCode),
   uniqueIndex('uniq_slug_lang').on(table.slug, table.langCode),
   index('idx_search_title').on(table.title),
+  index('idx_status_published').on(table.status, table.publishedAt),
 ]);
 
 // ==========================================
@@ -216,4 +220,29 @@ export const contactMessages = mysqlTable(
     index('idx_contact_email').on(table.email),
   ]
 );
+
+// ==========================================
+// 9. PDF JOBS TABLE (Durable Queue)
+// ==========================================
+export const pdfJobs = mysqlTable(
+  'pdf_jobs',
+  {
+    id: bigint('id', { mode: 'number' }).autoincrement().primaryKey(),
+    contentId: int('content_id').notNull(),
+    langCode: varchar('lang_code', { length: 10 }).notNull(),
+    status: mysqlEnum('status', ['queued', 'processing', 'completed', 'failed']).notNull().default('queued'),
+    attempts: tinyint('attempts', { unsigned: true }).notNull().default(0),
+    version: bigint('version', { mode: 'number' }).notNull().default(0),
+    leaseExpiresAt: timestamp('lease_expires_at'),
+    lastError: text('last_error'),
+    pdfFilePath: varchar('pdf_file_path', { length: 255 }),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_pdf_jobs_target').on(table.contentId, table.langCode),
+    index('idx_pdf_jobs_status').on(table.status),
+  ]
+);
+
 

@@ -80,10 +80,13 @@ export const contactLimiter = rateLimit({
   },
 });
 
-// 8. PDF Generation Limiter (5 downloads / 5 mins)
+// 8. PDF Limiter (30 downloads / 5 mins)
+//    Raised from 5/5min: with the 202-async contract, a single generation cycle
+//    consumes multiple requests (202 + Retry-After polls), and cached downloads
+//    are now cheap file streams — rendering happens in the background worker.
 export const pdfLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: config.isTest ? 10000 : 5,
+  max: config.isTest ? 10000 : 30,
   standardHeaders: true,
   legacyHeaders: false,
   handler: (_req: Request, res: Response) => {
@@ -114,6 +117,21 @@ export const authLimiter = rateLimit({
       typeof req.body?.identifier === 'string' ? req.body.identifier.trim().toLowerCase() : '';
     return `${req.ip || req.socket.remoteAddress || 'unknown'}:${identifier}`;
   },
+  handler: (_req: Request, res: Response) => {
+    sendError(res, 'Too many login attempts from this IP. Please wait 15 minutes before trying again.', 429);
+  },
+});
+
+// 11. Per-IP Login Cap (20 attempts / 15 mins per IP regardless of identifier)
+//     Stacks with authLimiter: closes the identifier-rotation bypass (each new
+//     identifier used to reset the composite budget), bounding scrypt CPU burn
+//     and password guesses per IP.
+export const authIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: config.isTest ? 10000 : 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => req.ip || req.socket.remoteAddress || 'unknown',
   handler: (_req: Request, res: Response) => {
     sendError(res, 'Too many login attempts from this IP. Please wait 15 minutes before trying again.', 429);
   },
